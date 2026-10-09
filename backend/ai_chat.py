@@ -33,7 +33,18 @@ def _pdf_b64(path: str) -> str:
 
 
 def _fail(provider: str, resp: httpx.Response):
-    raise RuntimeError(f"{provider} API error {resp.status_code}: {resp.text[:300]}")
+    body = resp.text or ""
+    low = body.lower()
+    # Turn provider auth failures into one clear, actionable message for admins.
+    if resp.status_code in (400, 401, 403) and any(
+        s in low for s in ("api_key_invalid", "api key not valid", "unauthenticated",
+                            "invalid api key", "invalid_api_key", "unauthorized",
+                            "permission_denied", "access_token_type_unsupported")):
+        raise RuntimeError(
+            f"Your {provider} API key is invalid or expired. Open Admin → AI Settings and paste a "
+            f"valid key. A Google Gemini key from https://aistudio.google.com/apikey starts with "
+            f"'AIza'. (Provider said: {resp.status_code} {provider} rejected the key.)")
+    raise RuntimeError(f"{provider} API error {resp.status_code}: {body[:300]}")
 
 
 async def _openai(key, model, system, text, files, max_tokens):
