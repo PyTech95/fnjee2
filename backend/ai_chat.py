@@ -9,6 +9,7 @@ Routing rule (decided by which key is configured in admin AI Settings / env):
 import base64
 import logging
 import os
+import asyncio
 
 import httpx
 
@@ -47,6 +48,34 @@ def _fail(provider: str, resp: httpx.Response):
     raise RuntimeError(f"{provider} API error {resp.status_code}: {body[:300]}")
 
 
+_RETRY_STATUS = {429, 500, 502, 503, 529}
+_BACKOFF = [3, 8, 18, 35, 60]  # seconds; big files/imports run in the background so we can wait
+
+
+async def _post_retry(url: str, headers: dict, body: dict, provider: str) -> httpx.Response:
+    """POST with exponential backoff on transient overload (503 'high demand', 429 rate-limit).
+    Auth/other 4xx fail fast via _fail()."""
+    last = None
+    for attempt in range(len(_BACKOFF) + 1):
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
+            r = await c.post(url, headers=headers, json=body)
+        if r.status_code == 200:
+            return r
+        last = r
+        if r.status_code in _RETRY_STATUS and attempt < len(_BACKOFF):
+            delay = _BACKOFF[attempt]
+            log.warning(f"{provider} {r.status_code} (attempt {attempt+1}) — retrying in {delay}s")
+            await asyncio.sleep(delay)
+            continue
+        _fail(provider, r)  # non-transient → clear error
+    # exhausted retries on a transient error
+    if last is not None and last.status_code in _RETRY_STATUS:
+        raise RuntimeError(
+            f"{provider} is busy right now ({last.status_code} high demand). We retried several "
+            f"times. Please try this import again in a few minutes.")
+    _fail(provider, last)
+
+
 async def _openai(key, model, system, text, files, max_tokens):
     content = [{"type": "text", "text": text}]
     for p in files or []:
@@ -55,11 +84,8 @@ async def _openai(key, model, system, text, files, max_tokens):
     body = {"model": model, "max_completion_tokens": max_tokens,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": content}]}
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
-        r = await c.post("https://api.openai.com/v1/chat/completions",
-                         headers={"Authorization": f"Bearer {key}"}, json=body)
-    if r.status_code != 200:
-        _fail("OpenAI", r)
+    r = await _post_retry("https://api.openai.com/v1/chat/completions",
+                          {"Authorization": f"Bearer {key}"}, body, "OpenAI")
     return r.json()["choices"][0]["message"]["content"]
 
 
@@ -72,10 +98,7 @@ async def _gemini(key, model, system, text, files, max_tokens):
             "generationConfig": {"maxOutputTokens": max_tokens,
                                  "thinkingConfig": {"thinkingLevel": "low"}}}
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
-        r = await c.post(url, headers={"x-goog-api-key": key}, json=body)
-    if r.status_code != 200:
-        _fail("Gemini", r)
+    r = await _post_retry(url, {"x-goog-api-key": key}, body, "Gemini")
     d = r.json()
     cands = d.get("candidates") or []
     if not cands:
