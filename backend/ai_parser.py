@@ -17,12 +17,13 @@ Each item MUST have these fields:
   marks: number (default 4)
   negative_marks: number (default 1)
   text: the question text (plain, no leading numbering like "1." or "Q1.")
-  options: array of strings for MCQ (["...","...","...","..."])
-  correct: array of option LETTERS "A"/"B"/"C"/"D" for MCQ, or the numeric answer for integer
+  options: array of original option strings (2-6 if present; do not invent options)
+  correct: option LETTERS for MCQ, or the numeric answer for integer, ONLY IF PRESENT IN THE DOCUMENT; otherwise []
   explanation: string (empty if not present)
 Rules:
 - Preserve every question in the input. Fill missing fields with reasonable defaults.
 - If an answer key is given at the end (like "1) 3   2) 1   3) 2"), map each question to its correct letter.
+- NEVER solve or guess an answer during extraction. If no source answer exists, correct MUST be [].
 - Return [] only if truly no questions found. Never return prose."""
 
 

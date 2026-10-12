@@ -11,19 +11,19 @@ Q_ANCHOR = re.compile(r"(?m)^\s*(?:Q\.?\s*)?(\d{1,3})\.\s+", re.IGNORECASE)
 
 # Option patterns inside a question block — MULTILINE so '$' means end-of-line.
 OPT_PATTERNS = [
-    re.compile(r"(?m)(?:(?<=^)|(?<=\s))([1-4])\)\s*([^\d\n][^\n]*?)(?=\s{2,}[1-4]\)|\s*$)"),  # "1) foo    2) bar"
-    re.compile(r"(?m)(?:(?<=^)|(?<=\s))\(([1-4])\)\s*([^\n]+?)(?=\s*\([1-4]\)|\s*$)"),        # "(1) foo"
-    re.compile(r"(?m)^\s*([A-D])[\.)]\s+(.+?)$"),                                             # "A. foo"
-    re.compile(r"(?m)^\s*\(([a-d])\)\s+(.+?)$"),                                              # "(a) foo"
+    re.compile(r"(?m)(?:(?<=^)|(?<=\s))([1-6])\)\s*([^\d\n][^\n]*?)(?=\s{2,}[1-6]\)|\s*$)"),  # "1) foo    2) bar"
+    re.compile(r"(?m)(?:(?<=^)|(?<=\s))\(([1-6])\)\s*([^\n]+?)(?=\s*\([1-6]\)|\s*$)"),        # "(1) foo"
+    re.compile(r"(?m)^\s*([A-F])[\.)]\s+(.+?)$"),                                             # "A. foo"
+    re.compile(r"(?m)^\s*\(([a-f])\)\s+(.+?)$"),                                              # "(a) foo"
 ]
 
-ANS_INLINE = re.compile(r"(?i)Ans(?:wer)?\s*[:\.\-]?\s*([1-4A-Da-d])")
+ANS_INLINE = re.compile(r"(?i)Ans(?:wer)?\s*[:\.\-]?\s*([1-6A-Fa-f])")
 
 # Answer-key section marker (case-insensitive)
 ANSKEY_MARKER = re.compile(r"(?im)^\s*(?:Answer[s]?[\s_]*(?:Key)?|Ans[s]?[\s_]*Key|Key)\s*[:\-]?\s*$")
 
 # Per-question answer key entry inside the answer-key block
-ANSKEY_ENTRY = re.compile(r"(?i)(?<![\w-])(\d{1,3})[\.):\-]\s*\(?\s*([1-4A-Da-d])(?![\w])")
+ANSKEY_ENTRY = re.compile(r"(?i)(?<![\w-])(\d{1,3})[\.):\-]\s*\(?\s*([1-6A-Fa-f])(?![\w])")
 
 
 def _normalize_option(s: str) -> str:
@@ -51,8 +51,8 @@ def _letter_from_ans(ans: str) -> Optional[str]:
     ans = ans.upper()
     if ans.isdigit():
         n = int(ans)
-        return chr(ord("A") + n - 1) if 1 <= n <= 4 else None
-    if ans in ("A", "B", "C", "D"): return ans
+        return chr(ord("A") + n - 1) if 1 <= n <= 6 else None
+    if ans in ("A", "B", "C", "D", "E", "F"): return ans
     return None
 
 
@@ -91,7 +91,7 @@ def _clean_question_text(text: str) -> str:
     """Strip trailing option markers + inline 'Answer:' hints from the question stem."""
     cuts = []
     # cut where options start
-    for patt in [r"(?<!\S)[1-4]\)\s+\S", r"\([1-4]\)\s+\S", r"(?m)^\s*[A-D][\.)]\s+\S", r"(?m)^\s*\([a-d]\)\s+\S"]:
+    for patt in [r"(?<!\S)[1-6]\)\s+\S", r"\([1-6]\)\s+\S", r"(?m)^\s*[A-F][\.)]\s+\S", r"(?m)^\s*\([a-f]\)\s+\S"]:
         m = re.search(patt, text)
         if m: cuts.append(m.start())
     if cuts:

@@ -7,9 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { Upload, FileSpreadsheet, FileText, FileImage, CloudDownload, CheckCircle2, AlertTriangle, ClipboardPaste, Zap, KeyRound, Image as ImageIcon } from "lucide-react";
+import { Upload, FileSpreadsheet, FileText, FileImage, CheckCircle2, AlertTriangle, Zap, Image as ImageIcon } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { QuestionContent, QuestionImage } from "@/components/QuestionContent";
 import MathText from "@/components/MathText";
@@ -22,24 +21,18 @@ const FORMATS = [
   { icon: FileText, name: "PowerPoint", exts: ".pptx" },
   { icon: FileText, name: "Text / CSV / HTML", exts: ".txt,.csv,.html,.rtf" },
   { icon: FileText, name: "PageMaker", exts: ".pmd,.p65,.pm6,.pm7" },
-  { icon: CloudDownload, name: "Google Drive", exts: "url" },
-  { icon: ClipboardPaste, name: "Paste text", exts: "textarea" },
 ];
 
 export default function ImportWizard() {
   const [step, setStep] = useState(1);
   const [file, setFile] = useState(null);
-  const [answerFile, setAnswerFile] = useState(null);
-  const [answerText, setAnswerText] = useState("");
-  const [driveUrl, setDriveUrl] = useState("");
-  const [rawText, setRawText] = useState("");
-  const [source, setSource] = useState("file"); // file | drive | paste
+  const [uploadMode, setUploadMode] = useState("upload"); // upload | upload_ai
+  const [generating, setGenerating] = useState(false);
   const [subjectDefault, setSubjectDefault] = useState("Physics");
   const [parsing, setParsing] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [parsed, setParsed] = useState(null);
   const [rows, setRows] = useState([]);
-  const [importMode, setImportMode] = useState("extract");
   // Optional batch categorisation — applied to every imported question.
   // Blank / "auto" means "keep what the AI detected". If set, it overrides.
   const [cat, setCat] = useState({
@@ -70,20 +63,51 @@ export default function ImportWizard() {
     throw new Error("Extraction timed out — try a smaller file or split the document.");
   };
 
+  const isMissingAnswer = (q) =>
+    q.type === "subjective" ? !String(q.explanation || "").trim() : !(q.correct || []).length;
+
+  const generateAnswers = async (questionRows) => {
+    const missing = questionRows.filter(isMissingAnswer).length;
+    if (!missing) {
+      toast.info("All extracted questions already have answers");
+      return;
+    }
+    setGenerating(true);
+    try {
+      // Only send question text/options. Keep full original rows (including diagrams)
+      // in the browser and merge each generated answer back by its index.
+      const payload = questionRows.map((q) => ({
+        type: q.type, subject: q.subject, text: q.text,
+        options: q.options || [], correct: q.correct || [],
+        explanation: q.explanation || "", has_image: Boolean(q.image_url),
+      }));
+      const { job_id } = await importApi.answerStart(payload);
+      const result = await pollImportJob(job_id);
+      const answers = new Map((result.answers || []).map((a) => [a.index, a]));
+      setRows((prev) => prev.map((q, i) => {
+        const answer = answers.get(i);
+        if (!answer || !isMissingAnswer(q)) return q;
+        const { index, ...patch } = answer;
+        return { ...q, ...patch };
+      }));
+      toast.success(`Generated ${result.generated_count || 0} answers for review`);
+      if (result.warnings?.length) toast.warning(`${result.warnings.length} question(s) need manual review`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || e?.message || "AI answer generation failed");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   const runParse = async () => {
-    if ((source === "file" || source === "qa_pdf") && !file) return toast.error(source === "qa_pdf" ? "Choose the Question PDF first" : "Choose a file first");
-    if (source === "drive" && !driveUrl) return toast.error("Enter a Google Drive URL");
-    if (source === "paste" && rawText.trim().length < 30) return toast.error("Paste at least a few questions");
+    if (!file) return toast.error("Choose a question paper first");
     setParsing(true);
     try {
       const fd = new FormData();
-      if (source === "file" || source === "qa_pdf") fd.append("file", file);
-      if (source === "drive") fd.append("drive_url", driveUrl);
-      if (source === "paste") fd.append("raw_text", rawText);
-      if (answerFile) fd.append("answer_file", answerFile);
-      if (answerText.trim()) fd.append("answer_text", answerText);
-      // Q+A PDF mode: force AI vision for accurate MCQ + options, treat as PDF.
-      if (source === "qa_pdf") { fd.append("prefer_ai", "true"); fd.append("file_type_hint", "pdf"); }
+      fd.append("file", file);
+      // Visual extraction preserves PDF questions, options, diagrams and printed keys.
+      // Word/Excel use existing text/tabular parsing with AI fallback.
+      if (/\.pdf$/i.test(file.name)) fd.append("prefer_ai", "true");
       fd.append("subject_default", subjectDefault);
       // Optional batch categorisation — only send fields the admin actually set.
       if (cat.type && cat.type !== "auto") fd.append("type_default", cat.type);
@@ -99,14 +123,18 @@ export default function ImportWizard() {
       if (String(cat.marks).trim() !== "") fd.append("marks_default", cat.marks);
       if (String(cat.negative_marks).trim() !== "") fd.append("negative_default", cat.negative_marks);
       fd.append("use_ai", "true");
-      fd.append("import_mode", importMode);
+      fd.append("import_mode", "extract");
       // Start the job in the background and poll — avoids the 60s gateway timeout
       // on long AI extractions (big PDFs/DOCX). The AI does the whole job server-side.
       const { job_id } = await importApi.start(fd);
       const r = await pollImportJob(job_id);
       setParsed(r);
-      setRows(r.questions.map((q) => ({ ...q, _include: true })));
+      const extracted = (r.questions || []).map((q) => ({ ...q, _include: true }));
+      setRows(extracted);
       setStep(3);
+      if (uploadMode === "upload_ai" && extracted.length) {
+        await generateAnswers(extracted);
+      }
       if (r.count > 0) {
         const badge = r.used_regex && !r.used_ai ? " (fast regex)" : r.used_ai ? " (AI-assisted)" : "";
         toast.success(`Detected ${r.count} question(s)${badge}`);
@@ -120,7 +148,11 @@ export default function ImportWizard() {
   };
 
   const commit = async () => {
-    const selected = rows.filter((r) => r._include).map(({ _include, duplicate, id_tmp, ...rest }) => ({ ...rest, status: "approved" }));
+    const selected = rows.filter((r) => r._include).map(({ _include, duplicate, id_tmp, ...rest }) => ({
+      ...rest,
+      status: rest.answer_review_required || isMissingAnswer(rest) ? "review" :
+        cat.status === "draft" || cat.status === "archived" || cat.status === "review" ? cat.status : "approved",
+    }));
     if (!selected.length) return toast.error("Select at least one question");
     setCommitting(true);
     try {
@@ -194,89 +226,29 @@ export default function ImportWizard() {
             </div>
           </div>
 
-          <Tabs value={source} onValueChange={setSource}>
-            <TabsList data-testid="source-tabs" className="rounded-full flex-wrap h-auto">
-              <TabsTrigger data-testid="tab-source-qa-pdf" value="qa_pdf" className="rounded-full">Question + Answer PDF</TabsTrigger>
-              <TabsTrigger data-testid="tab-source-file" value="file" className="rounded-full">Upload file</TabsTrigger>
-              <TabsTrigger data-testid="tab-source-paste" value="paste" className="rounded-full">Paste text</TabsTrigger>
-              <TabsTrigger data-testid="tab-source-drive" value="drive" className="rounded-full">Drive link</TabsTrigger>
-            </TabsList>
-            <TabsContent value="qa_pdf" className="mt-4">
-              <div className="grid md:grid-cols-2 gap-4">
-                <div>
-                  <Label className="text-sm font-semibold flex items-center gap-2"><FileImage className="h-4 w-4 text-primary" /> Question paper PDF</Label>
-                  <label htmlFor="qpdf-input" className="mt-2 block cursor-pointer border-2 border-dashed border-border rounded-2xl p-8 text-center hover:border-primary transition-colors duration-200">
-                    <Upload className="h-7 w-7 mx-auto text-muted-foreground" />
-                    <div className="mt-2 font-medium text-sm" data-testid="qpdf-name">{file ? file.name : "Choose question PDF"}</div>
-                    <input data-testid="qpdf-input" id="qpdf-input" type="file" className="hidden" accept=".pdf"
-                      onChange={(e) => setFile(e.target.files?.[0] || null)} />
-                  </label>
-                </div>
-                <div>
-                  <Label className="text-sm font-semibold flex items-center gap-2"><KeyRound className="h-4 w-4 text-accent" /> Answer / solution PDF <span className="text-muted-foreground font-normal">(optional)</span></Label>
-                  <label htmlFor="apdf-input" className="mt-2 block cursor-pointer border-2 border-dashed border-border rounded-2xl p-8 text-center hover:border-accent transition-colors duration-200">
-                    <Upload className="h-7 w-7 mx-auto text-muted-foreground" />
-                    <div className="mt-2 font-medium text-sm" data-testid="apdf-name">{answerFile ? answerFile.name : "Choose answer PDF"}</div>
-                    <input data-testid="apdf-input" id="apdf-input" type="file" className="hidden" accept=".pdf"
-                      onChange={(e) => setAnswerFile(e.target.files?.[0] || null)} />
-                  </label>
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground mt-3 flex items-center gap-1.5"><Zap className="h-3.5 w-3.5 text-primary" /> AI reads the question PDF for accurate options & diagrams, then maps the correct answer from your answer PDF (by question order). Takes a little longer but gives the best result.</p>
-            </TabsContent>
-            <TabsContent value="file" className="mt-4">
-              <label htmlFor="file-input" className="block cursor-pointer border-2 border-dashed border-border rounded-2xl p-10 text-center hover:border-primary transition-colors duration-200">
-                <Upload className="h-8 w-8 mx-auto text-muted-foreground" />
-                <div className="mt-3 font-medium">{file ? file.name : "Click to choose a file"}</div>
-                <div className="text-xs text-muted-foreground mt-1">Excel · Word · PDF · PageMaker</div>
-                <input data-testid="file-input" id="file-input" type="file" className="hidden"
-                  accept=".xlsx,.xls,.docx,.pdf,.pptx,.pmd,.p65,.pm6,.pm7,.txt,.csv,.tsv,.rtf,.md,.html,.htm,.jpg,.jpeg,.png,.webp,.gif,.bmp,.tif,.tiff,.heic,.heif"
-                  onChange={(e) => setFile(e.target.files?.[0] || null)} />
-              </label>
-            </TabsContent>
-            <TabsContent value="paste" className="mt-4">
-              <Label>Paste your questions here</Label>
-              <Textarea data-testid="paste-textarea" value={rawText} onChange={(e) => setRawText(e.target.value)}
-                rows={12} placeholder={`1. Which of the following is the SI unit of force?\n1) Watt   2) Newton   3) Joule   4) Pascal\n\n2. The value of g on the surface of Earth is …\n1) 8.9 m/s²   2) 9.8 m/s²   3) 10.1 m/s²   4) 11.2 m/s²\n\nAnswer Key:\n1) 2   2) 2`} />
-              <p className="text-xs text-muted-foreground mt-2">Number your questions <b>1., 2., 3.</b> — options as <b>1) 2) 3) 4)</b> or <b>A. B. C. D.</b>. Add an answer key at the end for auto-marking.</p>
-            </TabsContent>
-            <TabsContent value="drive" className="mt-4">
-              <Label>Public Google Drive link</Label>
-              <Input data-testid="drive-url-input" value={driveUrl} onChange={(e) => setDriveUrl(e.target.value)}
-                placeholder="https://drive.google.com/file/d/…/view" className="mt-1" />
-              <p className="text-xs text-muted-foreground mt-2">Make sure the link is set to "Anyone with the link can view".</p>
-            </TabsContent>
-          </Tabs>
-
-          <div className={`rounded-2xl border border-dashed border-accent/40 bg-accent/5 p-4 space-y-3 ${source === "qa_pdf" ? "hidden" : ""}`} data-testid="answer-key-block">
-            <div className="flex items-center gap-2">
-              <KeyRound className="h-4 w-4 text-accent" />
-              <Label className="text-sm font-semibold">Answer key <span className="text-muted-foreground font-normal">(optional) — matched to questions by order</span></Label>
-            </div>
-            <label htmlFor="answer-file-input" className="block cursor-pointer rounded-xl border border-border p-4 text-center hover:border-accent transition-colors duration-200">
-              <Upload className="h-5 w-5 mx-auto text-muted-foreground" />
-              <div className="mt-2 text-sm font-medium" data-testid="answer-file-name">{answerFile ? answerFile.name : "Upload answer-key file (PDF · Word · Excel · txt)"}</div>
-              <input data-testid="answer-file-input" id="answer-file-input" type="file" className="hidden"
-                accept=".xlsx,.xls,.docx,.pdf,.txt"
-                onChange={(e) => setAnswerFile(e.target.files?.[0] || null)} />
-            </label>
-            {answerFile && <button type="button" data-testid="answer-file-clear" onClick={() => setAnswerFile(null)} className="text-xs text-destructive hover:underline">Remove answer file</button>}
-            <div className="text-center text-xs text-muted-foreground">— or paste the key —</div>
-            <Textarea data-testid="answer-text-input" value={answerText} onChange={(e) => setAnswerText(e.target.value)}
-              rows={3} className="font-mono text-sm" placeholder={"1) 2   2) 4   3) 1   4) 3   …  or  1. A  2. B  3. C"} />
+          <div className="grid sm:grid-cols-2 gap-3" data-testid="upload-modes">
+            <button type="button" data-testid="mode-upload" onClick={() => setUploadMode("upload")}
+              className={`text-left rounded-2xl border-2 p-4 ${uploadMode === "upload" ? "border-primary bg-primary/5" : "border-border"}`}>
+              <div className="font-semibold flex items-center gap-2"><Upload className="h-4 w-4" /> Upload</div>
+              <p className="mt-1 text-xs text-muted-foreground">Extract original questions and available answers</p>
+            </button>
+            <button type="button" data-testid="mode-upload-ai" onClick={() => setUploadMode("upload_ai")}
+              className={`text-left rounded-2xl border-2 p-4 ${uploadMode === "upload_ai" ? "border-primary bg-primary/5" : "border-border"}`}>
+              <div className="font-semibold flex items-center gap-2"><Zap className="h-4 w-4" /> Upload + AI Generate Answers</div>
+              <p className="mt-1 text-xs text-muted-foreground">Generate missing answers with configured Gemini AI</p>
+            </button>
           </div>
 
+          <label htmlFor="file-input" className="block cursor-pointer border-2 border-dashed border-border rounded-2xl p-10 text-center hover:border-primary transition-colors duration-200">
+            <Upload className="h-8 w-8 mx-auto text-muted-foreground" />
+            <div className="mt-3 font-medium">{file ? file.name : "Click to choose a question paper"}</div>
+            <div className="text-xs text-muted-foreground mt-1">PDF · Word · Excel · PowerPoint · Images · Text · PageMaker</div>
+            <input data-testid="file-input" id="file-input" type="file" className="hidden"
+              accept=".xlsx,.xls,.docx,.pdf,.pptx,.pmd,.p65,.pm6,.pm7,.txt,.csv,.tsv,.rtf,.md,.html,.htm,.jpg,.jpeg,.png,.webp,.gif,.bmp,.tif,.tiff,.heic,.heif"
+              onChange={(e) => setFile(e.target.files?.[0] || null)} />
+          </label>
+
           <div className="grid md:grid-cols-2 gap-4">
-            {source !== "paste" && <div>
-              <Label>PDF content</Label>
-              <Select value={importMode} onValueChange={setImportMode}>
-                <SelectTrigger data-testid="import-mode"><SelectValue /></SelectTrigger>
-                <SelectContent data-testid="import-mode-menu">
-                  <SelectItem data-testid="import-mode-extract" value="extract">Extract original questions</SelectItem>
-                  <SelectItem data-testid="import-mode-adapt" value="adapt">Create adapted practice from solutions</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>}
             <div>
               <Label>Default subject</Label>
               <Select value={subjectDefault} onValueChange={setSubjectDefault}>
@@ -350,7 +322,7 @@ export default function ImportWizard() {
 
           <div className="flex justify-end">
             <Button data-testid="parse-btn" onClick={runParse} disabled={parsing} className="rounded-full px-8">
-              <Zap className="h-4 w-4 mr-2" /> {parsing ? "Extracting…" : "Upload & Extract Questions"}
+              <Zap className="h-4 w-4 mr-2" /> {parsing ? "Processing…" : uploadMode === "upload_ai" ? "Upload + Generate Answers" : "Upload & Extract Questions"}
             </Button>
           </div>
         </Card>
@@ -368,13 +340,20 @@ export default function ImportWizard() {
               </div>
             </div>
             <div className="flex gap-2 flex-wrap">
-              <Button variant="outline" className="rounded-full" onClick={() => setAllIncluded(true)} data-testid="select-all-rows">Select all</Button>
+              <Button type="button" variant="outline" data-testid="generate-missing-answers"
+                  onClick={() => generateAnswers(rows)}
+                  disabled={generating || committing || !rows.some(isMissingAnswer)}
+                  className="rounded-full">
+                  <Zap className="h-4 w-4 mr-2" />
+                  {generating ? "Generating answers…" : "Generate Missing Answers with AI"}
+                </Button>
+                <Button variant="outline" className="rounded-full" onClick={() => setAllIncluded(true)} data-testid="select-all-rows">Select all</Button>
               <Button variant="outline" className="rounded-full" onClick={() => setAllIncluded(false)} data-testid="deselect-all-rows">Deselect all</Button>
               <Button variant="outline" className="rounded-full" onClick={addBlankRow} data-testid="add-blank-row">
                 + Add question
               </Button>
               <Button data-testid="import-start-over" variant="outline" className="rounded-full" onClick={() => { setStep(1); setParsed(null); setRows([]); }}>Start over</Button>
-              <Button data-testid="commit-import" className="rounded-full" onClick={commit} disabled={committing || includedCount === 0}>
+              <Button data-testid="commit-import" className="rounded-full" onClick={commit} disabled={committing || generating || includedCount === 0}>
                 <CheckCircle2 className="h-4 w-4 mr-2" /> {committing ? "Saving…" : `Submit & save ${includedCount} question(s)`}
               </Button>
             </div>
@@ -399,10 +378,12 @@ export default function ImportWizard() {
                     className="mt-1.5 h-4 w-4 accent-primary" />
                   <div className="flex-1 min-w-0 space-y-3">
                     <div className="flex flex-wrap gap-2 items-center">
+                      <span className="font-semibold text-sm">Question {r.source_number || i + 1}</span>
                       <Badge variant="secondary" className="rounded-full">{r.type}</Badge>
                       <Badge variant="outline" className="rounded-full">{r.subject}</Badge>
                       <Badge variant="outline" className="rounded-full">{r.difficulty}</Badge>
-                      {r.content_origin === "ai_adapted" && <Badge data-testid={`row-origin-${i}`} variant="outline">AI-adapted</Badge>}
+                      {r.answer_origin === "ai_generated" && <Badge variant="outline">Gemini answer · {r.answer_review_required ? "review" : "approved"}</Badge>}
+                      {isMissingAnswer(r) && <Badge variant="outline">Answer missing</Badge>}
                       {r.duplicate && <Badge className="rounded-full bg-amber-500/10 text-amber-700 border-amber-500/30" variant="outline">Duplicate</Badge>}
                       <button onClick={() => removeRow(i)} className="ml-auto text-xs text-destructive hover:underline" data-testid={`remove-row-${i}`}>Remove</button>
                     </div>
@@ -426,8 +407,12 @@ export default function ImportWizard() {
                             <div key={oi} className="flex items-center gap-2">
                               <button onClick={() => {
                                 const correct = new Set(r.correct || []);
-                                if (isCorrect) correct.delete(letter); else correct.add(letter);
-                                updateRow(i, { correct: [...correct] });
+                                if (r.type !== "mcq_multi") {
+                                  updateRow(i, { correct: isCorrect ? [] : [letter], answer_review_required: false, status: "review" });
+                                } else {
+                                  if (isCorrect) correct.delete(letter); else correct.add(letter);
+                                  updateRow(i, { correct: [...correct], answer_review_required: false, status: "review" });
+                                }
                               }} data-testid={`row-${i}-opt-${letter}-toggle`}
                                 className={`h-7 w-7 rounded-full text-xs font-bold grid place-items-center border shrink-0 ${
                                   isCorrect ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground"
@@ -439,6 +424,19 @@ export default function ImportWizard() {
                         })}
                       </div>
                     )}
+                    {r.type === "integer" && (
+                      <div>
+                        <Label className="text-xs">Numerical answer</Label>
+                        <Input value={(r.correct || [])[0] || ""}
+                          onChange={(e) => updateRow(i, { correct: e.target.value ? [e.target.value] : [],
+                            answer_review_required: false, status: "review" })} />
+                      </div>
+                    )}
+                    {r.answer_review_required && !isMissingAnswer(r) && (
+                      <Button variant="outline" size="sm" onClick={() => updateRow(i, {
+                        answer_review_required: false, status: "approved",
+                      })}>Approve checked AI answer</Button>
+                    )}
                     <div className="flex flex-wrap gap-3 text-xs items-center">
                       <div><b>Correct:</b> {(r.correct || []).join(", ") || "—"}</div>
                       <div><b>Marks:</b> {r.marks}</div>
@@ -447,6 +445,8 @@ export default function ImportWizard() {
                     </div>
                     {(r.explanation || r.explanation_image_url) && <details data-testid={`import-solution-${i}`}>
                       <summary data-testid={`import-solution-toggle-${i}`} className="cursor-pointer text-sm font-medium">Solution preview</summary>
+                      <Textarea className="mt-2" rows={3} value={r.explanation || ""}
+                        onChange={(e) => updateRow(i, { explanation: e.target.value, status: "review" })} />
                       <div className="mt-3 text-sm"><MathText>{r.explanation}</MathText>
                         <QuestionImage src={r.explanation_image_url} alt="Source solution illustration" testId={`import-solution-image-${i}`} />
                       </div>

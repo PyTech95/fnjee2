@@ -21,6 +21,7 @@ from visual_pdf import parse_visual_pdf
 from regex_extractor import regex_extract_questions
 from ai_key import resolve as resolve_ai, resolve_full as ai_full, load_from_db as load_ai_cfg, status as ai_status, PROVIDERS as AI_PROVIDERS
 from ai_chat import ai_complete, OWN_DEFAULT_MODEL
+from answer_generator import generate_missing_answers
 
 MONGO_URL = os.environ['MONGO_URL']
 DB_NAME = os.environ['DB_NAME']
@@ -153,6 +154,8 @@ class QuestionIn(BaseModel):
     source_number: Optional[int] = None
     source: Optional[str] = None
     status: Literal['draft', 'review', 'approved', 'archived'] = 'approved'
+    answer_origin: Optional[str] = None
+    answer_review_required: bool = False
     # Extended metadata (spec: exam / class / year / paper series / tags)
     exam: Optional[str] = ''
     student_class: Optional[str] = ''
@@ -529,10 +532,8 @@ async def _do_import_parse(*, data: bytes, filename: str, ext: str, text: str,
             if ext == "pdf":
                 await _p(30, "Code parse was thin — AI is reading the PDF…")
                 ai_parsed, ai_errs, document_kind = await parse_visual_pdf(data, subject, import_mode, progress_cb=progress_cb)
-                if import_mode == "extract" and document_kind == "solutions" and not ai_parsed:
-                    await _p(55, "Solutions detected — generating practice questions…")
-                    ai_parsed, adapt_warns, document_kind = await parse_visual_pdf(data, subject, "adapt", progress_cb=progress_cb)
-                    ai_errs = ["Auto-detected a solutions-only document — generated adapted practice questions (you can review/edit each below)."] + adapt_warns
+                # In original-question mode, do NOT silently invent adapted questions
+                # when the uploaded document contains solutions only.
                 used_ai = True
                 _merge(parsed, [q for q in ai_parsed if isinstance(q, dict)])
                 errors.extend(ai_errs)
@@ -767,6 +768,36 @@ async def import_start(
     return {"job_id": job_id, "filename": filename, "status": "processing"}
 
 
+async def _run_answer_job(job_id: str, questions: list):
+    async def _progress(pct, msg):
+        await db.import_jobs.update_one({"id": job_id},
+            {"$set": {"progress": {"pct": int(pct), "msg": msg}}})
+    try:
+        result = await generate_missing_answers(questions, progress_cb=_progress)
+        await db.import_jobs.update_one({"id": job_id},
+            {"$set": {"status": "done", "result": result,
+                      "progress": {"pct": 100, "msg": "Done"}, "finished_at": now_iso()}})
+    except Exception as exc:
+        log.exception("AI answer job failed")
+        await db.import_jobs.update_one({"id": job_id},
+            {"$set": {"status": "error", "error": str(exc)[:300], "finished_at": now_iso()}})
+
+
+@api.post("/import/answers/start")
+async def import_answers_start(payload: dict, user: dict = Depends(require_role('admin'))):
+    questions = payload.get("questions")
+    if not isinstance(questions, list) or not 1 <= len(questions) <= 300:
+        raise HTTPException(400, "Provide 1 to 300 questions")
+    job_id = new_id()
+    await db.import_jobs.insert_one({
+        "id": job_id, "status": "processing", "filename": "AI answer generation",
+        "created_by": user["id"], "created_at": now_iso(), "result": None, "error": None,
+        "progress": {"pct": 2, "msg": "Queued…"}})
+    task = asyncio.create_task(_run_answer_job(job_id, questions))
+    _bg_tasks.add(task); task.add_done_callback(_bg_tasks.discard)
+    return {"job_id": job_id, "status": "processing"}
+
+
 @api.get("/import/jobs/{job_id}")
 async def import_job_status(job_id: str, user: dict = Depends(require_role('admin'))):
     job = await db.import_jobs.find_one({"id": job_id}, {"_id": 0})
@@ -808,6 +839,13 @@ async def import_commit(payload: dict, user: dict = Depends(require_role('admin'
             # status
             if q.get("status") not in ("draft", "review", "approved", "archived"):
                 q["status"] = "approved"
+
+            # Generated answers (and unanswered rows) require admin verification.
+            if q.get("answer_review_required") or (
+                (q.get("type") != "subjective" and not q.get("correct")) or
+                (q.get("type") == "subjective" and not q.get("explanation"))
+            ):
+                q["status"] = "review"
 
             # uppercase single-letter correct answers for option-based questions
             if q.get("type") in ("mcq_single", "mcq_multi", "true_false", "assertion_reason", "match") and isinstance(q.get("correct"), list):
