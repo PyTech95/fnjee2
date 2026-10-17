@@ -32,8 +32,16 @@ TYPE_MAP = {
 }
 
 
-def parse_excel(data: bytes) -> Tuple[List[dict], List[str]]:
-    """Parse .xlsx question bank."""
+def parse_excel(data: bytes, ext: str = "xlsx", default_subject: str = "") -> Tuple[List[dict], List[str]]:
+    """Parse a question-bank spreadsheet in the FNJEE standard format (all sheets,
+    forgiving headers, embedded pictures). See question_sheet.py."""
+    from question_sheet import parse_workbook
+    questions, warnings, _summary = parse_workbook(data, ext=ext, default_subject=default_subject)
+    return questions, warnings
+
+
+def parse_excel_legacy(data: bytes) -> Tuple[List[dict], List[str]]:
+    """Original single-sheet parser (kept for reference / fallback)."""
     from openpyxl import load_workbook
     errors: List[str] = []
     parsed: List[dict] = []

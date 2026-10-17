@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { questionsApi } from "@/lib/api";
+import { questionsApi, importApi, downloadBlob } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -11,7 +11,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Search, Trash2, AlertTriangle } from "lucide-react";
+import { Search, Trash2, AlertTriangle, Download } from "lucide-react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { QuestionContent, QuestionImage } from "@/components/QuestionContent";
@@ -61,6 +61,20 @@ export default function QuestionBank() {
     } finally { setDeleting(false); }
   };
 
+  const [exporting, setExporting] = useState(false);
+  const exportExcel = async () => {
+    setExporting(true);
+    try {
+      const params = {};
+      if (filters.subject && filters.subject !== "all") params.subject = filters.subject;
+      const blob = await importApi.exportBank(params);
+      downloadBlob(blob, `FNJEE_Questions_${params.subject || "All"}.xlsx`);
+      toast.success("Excel downloaded — edit it and upload again via Bulk import");
+    } catch (e) {
+      toast.error("Export failed");
+    } finally { setExporting(false); }
+  };
+
   const doBulkEdit = async () => {
     const patch = {};
     ["difficulty", "status", "chapter", "topic"].forEach((k) => { if (bulkEdit[k]) patch[k] = bulkEdit[k]; });
@@ -87,6 +101,9 @@ export default function QuestionBank() {
         <div className="flex gap-2">
           <Link to="/admin/questions/new"><Button data-testid="new-question-btn" className="rounded-full">+ New question</Button></Link>
           <Link to="/admin/import"><Button data-testid="go-import-btn" variant="outline" className="rounded-full">Bulk import</Button></Link>
+          <Button data-testid="export-excel-btn" variant="outline" className="rounded-full" onClick={exportExcel} disabled={exporting}>
+            <Download className="h-4 w-4 mr-2" />{exporting ? "Exporting…" : "Export to Excel"}
+          </Button>
         </div>
       </div>
 
@@ -190,7 +207,7 @@ export default function QuestionBank() {
                 <TableCell className="max-w-md min-w-[220px]">
                   <details data-testid={`question-preview-${r.id}`}>
                     <summary data-testid={`question-preview-toggle-${r.id}`} className="cursor-pointer font-medium">
-                      {r.text.split('\n')[0]}
+                      <MathText>{r.text.split('\n')[0]}</MathText>
                       {(r.image_url || r.text.includes('| ---')) && <span className="ml-2 text-xs text-primary">{r.image_url ? "Image" : "Table"}</span>}
                     </summary>
                     <div className="mt-4 space-y-3">

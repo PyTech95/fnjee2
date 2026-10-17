@@ -1,6 +1,6 @@
 """ExamNest backend - FastAPI + MongoDB + JWT auth + question bank + test engine."""
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Request
-from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi.responses import PlainTextResponse, JSONResponse, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -19,6 +19,9 @@ from parsers import (parse_excel, parse_docx, parse_pdf, parse_pagemaker,
 from ai_parser import ai_extract_questions, ai_predict_difficulty, ai_generate_quiz
 from visual_pdf import parse_visual_pdf
 from regex_extractor import regex_extract_questions
+from question_sheet import (parse_delimited, looks_like_question_table, build_template,
+                            build_workbook)
+from media_store import externalize_question, media_path
 from ai_key import resolve as resolve_ai, resolve_full as ai_full, load_from_db as load_ai_cfg, status as ai_status, PROVIDERS as AI_PROVIDERS
 from ai_chat import ai_complete, OWN_DEFAULT_MODEL
 from answer_generator import generate_missing_answers
@@ -381,7 +384,7 @@ async def list_questions(
 @api.post("/questions")
 async def create_question(inp: QuestionIn, user: dict = Depends(require_role('admin'))):
     dup = await db.questions.find_one({"text": inp.text}, {"_id": 0, "id": 1})
-    doc = inp.model_dump()
+    doc = externalize_question(inp.model_dump())
     doc.update({"id": new_id(), "created_at": now_iso(), "created_by": user["id"],
                 "duplicate_of": dup["id"] if dup else None})
     await db.questions.insert_one(doc)
@@ -389,7 +392,7 @@ async def create_question(inp: QuestionIn, user: dict = Depends(require_role('ad
 
 @api.put("/questions/{qid}")
 async def update_question(qid: str, inp: QuestionIn, user: dict = Depends(require_role('admin'))):
-    upd = inp.model_dump(); upd["updated_at"] = now_iso()
+    upd = externalize_question(inp.model_dump()); upd["updated_at"] = now_iso()
     r = await db.questions.update_one({"id": qid}, {"$set": upd})
     if r.matched_count == 0: raise HTTPException(404, "Not found")
     return await db.questions.find_one({"id": qid}, {"_id": 0})
@@ -405,7 +408,7 @@ async def patch_question(qid: str, patch: dict, user: dict = Depends(require_rol
         valid = QuestionIn(**merged).model_dump()
     except Exception as e:
         raise HTTPException(422, str(e)[:400])
-    upd = {k: valid[k] for k in patch}; upd["updated_at"] = now_iso()
+    upd = externalize_question({k: valid[k] for k in patch}); upd["updated_at"] = now_iso()
     await db.questions.update_one({"id": qid}, {"$set": upd})
     return await db.questions.find_one({"id": qid}, {"_id": 0})
 
@@ -501,7 +504,9 @@ async def _do_import_parse(*, data: bytes, filename: str, ext: str, text: str,
                 seen.add(s); into.append(q)
 
     is_image = ext in IMAGE_EXTS
-    is_spreadsheet = ext in ("xlsx", "xls")
+    # Standard FNJEE question sheet: .xlsx/.xls, or a .csv/.tsv whose header row has a Question column.
+    is_spreadsheet = ext in ("xlsx", "xls", "xlsm") or (
+        ext in ("csv", "tsv") and bool(data) and looks_like_question_table(data, ext))
 
     # ---------------- STEP 1: CODE-FIRST (deterministic, fast, free) ----------------
     # Skip the fast regex path when the admin asked for AI vision (prefer_ai) on a PDF —
@@ -510,7 +515,10 @@ async def _do_import_parse(*, data: bytes, filename: str, ext: str, text: str,
     try:
         if is_spreadsheet:
             await _p(40, "Reading spreadsheet…")
-            parsed, warns = parse_excel(data)
+            if ext in ("csv", "tsv"):
+                parsed, warns, _had = parse_delimited(data, ext, subject)
+            else:
+                parsed, warns = parse_excel(data, "xls" if ext == "xls" else "xlsx", subject)
             errors.extend(warns); used_regex = bool(parsed)
         elif not is_image and not skip_code:
             if not text:
@@ -622,12 +630,16 @@ async def _do_import_parse(*, data: bytes, filename: str, ext: str, text: str,
         except Exception as e:
             errors.append(f"Answer key parse error: {e}")
 
-    # duplicate detection against existing bank
+    # duplicate detection against existing bank (batched: one query per 500 questions)
+    await _p(92, "Checking for duplicates…")
+    existing_sigs = await _existing_question_sigs(parsed)
+    seen_in_file: set = set()
     for p in parsed:
         p.setdefault("id_tmp", new_id())
         p.setdefault("source", filename)
-        dup = await db.questions.find_one({"text": p.get("text", "")}, {"_id": 0, "id": 1})
-        p["duplicate"] = bool(dup)
+        sig = _qsig(p)
+        p["duplicate"] = sig in existing_sigs or sig in seen_in_file
+        seen_in_file.add(sig)
 
     if len(parsed) == 0:
         if ext in ("pmd", "p65", "pm6", "pm7"):
@@ -655,13 +667,91 @@ async def _do_import_parse(*, data: bytes, filename: str, ext: str, text: str,
 _bg_tasks: set = set()
 
 
-async def _run_import_job(job_id: str, kwargs: dict):
-    """Background worker: runs the heavy parse and stores the result on the job doc."""
+def _img_key(url) -> str:
+    """Same picture → same key, whether it is still a data: URL or already saved as /api/media/<hash>."""
+    if not isinstance(url, str) or not url:
+        return ""
+    if url.startswith("/api/media/"):
+        return url.rsplit("/", 1)[-1].split(".")[0]
+    if url.startswith("data:image/"):
+        import base64, hashlib
+        try:
+            return hashlib.sha256(base64.b64decode(url.split(",", 1)[1])).hexdigest()[:24]
+        except Exception:
+            return url[-64:]
+    return url
+
+
+def _qsig(q: dict) -> str:
+    """Duplicate signature: same question text AND same options AND same picture (generic stems like
+    'Which of the following is correct?' or picture-only questions are NOT duplicates)."""
+    opts = q.get("options") or []
+    return ((q.get("text") or "").strip() + "\u241e" + "\u241f".join(str(o).strip() for o in opts)
+            + "\u241e" + _img_key(q.get("image_url")))
+
+
+async def _existing_question_sigs(questions: List[dict]) -> set:
+    """Signatures of `questions` that already exist in the question bank (batched $in on text)."""
+    uniq = list({(q.get("text") or "") for q in questions if q.get("text")})
+    found: set = set()
+    for i in range(0, len(uniq), 500):
+        async for d in db.questions.find({"text": {"$in": uniq[i:i + 500]}}, {"_id": 0, "text": 1, "options": 1, "image_url": 1}):
+            found.add(_qsig(d))
+    return found
+
+
+def _approx_size(obj) -> int:
+    try:
+        import json as _json
+        return len(_json.dumps(obj, default=str))
+    except Exception:
+        return 4096
+
+
+async def _store_job_questions(job_id: str, questions: List[dict]):
+    """Store parsed questions outside the job doc (Mongo docs cap at 16MB; big sheets with
+    pictures easily exceed that). Chunks of <=8MB, auto-expire after 2 days."""
+    await db.import_job_chunks.delete_many({"job_id": job_id})
+    expire = datetime.now(timezone.utc) + timedelta(days=2)
+    chunk, size, seq = [], 0, 0
+    for q in questions:
+        s = _approx_size(q)
+        if chunk and (size + s > 8_000_000 or len(chunk) >= 500):
+            await db.import_job_chunks.insert_one({"job_id": job_id, "seq": seq, "questions": chunk, "expire_at": expire})
+            chunk, size, seq = [], 0, seq + 1
+        chunk.append(q); size += s
+    if chunk:
+        await db.import_job_chunks.insert_one({"job_id": job_id, "seq": seq, "questions": chunk, "expire_at": expire})
+
+
+async def _load_job_questions(job_id: str) -> List[dict]:
+    out: List[dict] = []
+    async for c in db.import_job_chunks.find({"job_id": job_id}, {"_id": 0}).sort("seq", 1):
+        out.extend(c.get("questions") or [])
+    return out
+
+
+async def _run_import_job(job_id: str, kwargs: dict, user: Optional[dict] = None,
+                          auto_commit: bool = False, skip_duplicates: bool = True):
+    """Background worker: runs the heavy parse and stores the result on the job doc.
+    auto_commit=True saves straight to the question bank (bulk Excel uploads)."""
     async def _progress(pct, msg):
         await db.import_jobs.update_one({"id": job_id},
             {"$set": {"progress": {"pct": int(pct), "msg": msg}}})
     try:
         result = await _do_import_parse(progress_cb=_progress, **kwargs)
+        questions = result.pop("questions", []) or []
+        if auto_commit and user and questions:
+            await _progress(95, f"Saving {len(questions)} question(s) to the bank…")
+            result["commit"] = await _commit_questions(
+                [dict(q) for q in questions], user, kwargs.get("subject_default"),
+                skip_duplicates=skip_duplicates)
+            # keep a small preview only
+            result["questions"] = [{k: v for k, v in q.items() if k not in ("image_url", "explanation_image_url")}
+                                   for q in questions[:20]]
+        else:
+            await _store_job_questions(job_id, questions)
+            result["chunked"] = True
         await db.import_jobs.update_one({"id": job_id},
             {"$set": {"status": "done", "result": result, "progress": {"pct": 100, "msg": "Done"},
                       "finished_at": now_iso()}})
@@ -741,10 +831,13 @@ async def import_start(
     marks_default: Optional[float] = Form(None),
     negative_default: Optional[float] = Form(None),
     prefer_ai: Optional[bool] = Form(False),
+    auto_commit: Optional[bool] = Form(False),
+    skip_duplicates: Optional[bool] = Form(True),
     user: dict = Depends(require_role('admin')),
 ):
     """Kick off an import in the background and return a job id immediately.
-    The AI does the whole job server-side; the client polls /import/jobs/{id}."""
+    The AI does the whole job server-side; the client polls /import/jobs/{id}.
+    auto_commit=true saves straight into the question bank (no review screen)."""
     data, filename, ext, text = await _resolve_import_inputs(file, drive_url, file_type_hint, raw_text)
     answer_data = None; answer_ext = ""
     if answer_file is not None:
@@ -763,7 +856,9 @@ async def import_start(
         exam_default=exam_default, class_default=class_default, year_default=year_default,
         tags_default=tags_default, marks_default=marks_default, negative_default=negative_default,
         answer_data=answer_data, answer_ext=answer_ext, answer_text=answer_text, prefer_ai=bool(prefer_ai))
-    task = asyncio.create_task(_run_import_job(job_id, kwargs))
+    task = asyncio.create_task(_run_import_job(job_id, kwargs, user=user,
+                                               auto_commit=bool(auto_commit),
+                                               skip_duplicates=bool(skip_duplicates)))
     _bg_tasks.add(task); task.add_done_callback(_bg_tasks.discard)
     return {"job_id": job_id, "filename": filename, "status": "processing"}
 
@@ -798,20 +893,130 @@ async def import_answers_start(payload: dict, user: dict = Depends(require_role(
     return {"job_id": job_id, "status": "processing"}
 
 
+async def _run_screenshot_job(job_id: str, q_imgs: List[bytes], a_imgs: List[bytes], opts: dict):
+    from screenshot_import import screenshots_to_questions
+    async def _progress(pct, msg):
+        await db.import_jobs.update_one({"id": job_id}, {"$set": {"progress": {"pct": int(pct), "msg": msg}}})
+    try:
+        result = await screenshots_to_questions(q_imgs, a_imgs, progress_cb=_progress, **opts)
+        questions = result.pop("questions", [])
+        existing = await _existing_question_sigs(questions)
+        for q in questions:
+            q["id_tmp"] = new_id()
+            q["duplicate"] = _qsig(q) in existing
+        await _store_job_questions(job_id, questions)
+        result.update({"chunked": True, "filename": "screenshot", "used_ai": True, "used_regex": False,
+                       "count": len(questions), "answer_key_applied": 0})
+        await db.import_jobs.update_one({"id": job_id}, {"$set": {
+            "status": "done", "result": result, "progress": {"pct": 100, "msg": "Done"}, "finished_at": now_iso()}})
+    except Exception as e:
+        log.exception("screenshot job failed")
+        await db.import_jobs.update_one({"id": job_id}, {"$set": {
+            "status": "error", "error": str(e)[:400], "finished_at": now_iso()}})
+
+
+@api.post("/import/screenshot/start")
+async def import_screenshot_start(
+    question_images: List[UploadFile] = File(...),
+    answer_images: List[UploadFile] = File(default=[]),
+    subject_default: Optional[str] = Form(""),
+    chapter_default: Optional[str] = Form(""),
+    class_default: Optional[str] = Form(""),
+    exam_default: Optional[str] = Form(""),
+    attach_screenshot: Optional[bool] = Form(False),
+    user: dict = Depends(require_role('admin')),
+):
+    """Screenshot(s) of a question (+ optional answer/solution screenshots) → AI → question(s) for review.
+    Uses the AI key from Admin → AI Settings. Runs in the background; poll /import/jobs/{job_id}."""
+    if not ai_status().get("masked_key"):
+        raise HTTPException(400, "AI is not set up yet. Open Admin → AI Settings and paste an AI key "
+                                 "(Gemini key from aistudio.google.com/apikey starts with 'AIza').")
+    q_imgs = [await f.read() for f in question_images if f is not None]
+    a_imgs = [await f.read() for f in (answer_images or []) if f is not None]
+    q_imgs = [b for b in q_imgs if b]
+    a_imgs = [b for b in a_imgs if b]
+    if not q_imgs:
+        raise HTTPException(400, "Paste at least one question screenshot")
+    if len(q_imgs) + len(a_imgs) > 12 or sum(map(len, q_imgs + a_imgs)) > 40 * 1024 * 1024:
+        raise HTTPException(400, "Too many / too large screenshots (max 12 images, 40 MB)")
+    await rate_limit(f"shot:{user['id']}", limit=30, window_seconds=60)
+    job_id = new_id()
+    await db.import_jobs.insert_one({"id": job_id, "status": "processing", "filename": "screenshot",
+        "created_by": user["id"], "created_at": now_iso(), "result": None, "error": None,
+        "progress": {"pct": 2, "msg": "Queued…"}})
+    opts = {"subject": subject_default or "", "chapter": chapter_default or "",
+            "student_class": class_default or "", "exam": exam_default or "",
+            "attach_screenshot": bool(attach_screenshot)}
+    task = asyncio.create_task(_run_screenshot_job(job_id, q_imgs, a_imgs, opts))
+    _bg_tasks.add(task); task.add_done_callback(_bg_tasks.discard)
+    return {"job_id": job_id, "status": "processing"}
+
+
 @api.get("/import/jobs/{job_id}")
 async def import_job_status(job_id: str, user: dict = Depends(require_role('admin'))):
     job = await db.import_jobs.find_one({"id": job_id}, {"_id": 0})
     if not job:
         raise HTTPException(404, "Import job not found")
+    res = job.get("result")
+    if job.get("status") == "done" and isinstance(res, dict) and res.get("chunked"):
+        res["questions"] = await _load_job_questions(job_id)
     return job
 
 
+@api.get("/media/{name}")
+async def get_media(name: str):
+    """Question pictures saved by imports (public, immutable, cached for a year)."""
+    from fastapi.responses import FileResponse
+    p = media_path(name)
+    if not p:
+        raise HTTPException(404, "Not found")
+    return FileResponse(p, headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
-@api.post("/import/commit")
-async def import_commit(payload: dict, user: dict = Depends(require_role('admin'))):
-    questions = payload.get("questions", [])
-    inserted = []
+
+@api.get("/import/template")
+async def import_template():
+    """The standard FNJEE question upload format (sample .xlsx with instructions)."""
+    return Response(
+        content=build_template(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="FNJEE_Question_Upload_Format.xlsx"',
+                 "Cache-Control": "no-store"})
+
+
+@api.get("/questions/export")
+async def export_questions(
+    subject: Optional[str] = None, chapter: Optional[str] = None,
+    status_f: Optional[str] = None, exam: Optional[str] = None,
+    student_class: Optional[str] = None, limit: int = 20000,
+    user: dict = Depends(require_role('admin')),
+):
+    """Download the question bank in the same standard Excel format (edit & re-upload)."""
+    q: dict = {"personal": {"$ne": True}}
+    if subject: q["subject"] = subject
+    if chapter: q["chapter"] = chapter
+    if status_f: q["status"] = status_f
+    if exam: q["exam"] = exam
+    if student_class: q["student_class"] = student_class
+    docs = await db.questions.find(q, {"_id": 0}).sort("created_at", 1).to_list(max(1, min(limit, 50000)))
+    data = build_workbook(docs, with_instructions=True)
+    fname = f"FNJEE_Questions_{(subject or 'All').replace(' ', '_')}.xlsx"
+    return Response(content=data,
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+
+async def _commit_questions(questions: List[dict], user: dict, subject_default: Optional[str] = None,
+                            skip_duplicates: bool = False) -> dict:
+    """Validate + save imported questions. Bad rows are skipped (never kill the batch);
+    valid rows are inserted 500 at a time. skip_duplicates drops questions whose text
+    already exists in the bank or repeats earlier in the same upload."""
+    from pymongo.errors import BulkWriteError
     skipped: List[dict] = []
+    docs: List[tuple] = []
+    dup_skipped = 0
+    existing = await _existing_question_sigs(questions) if skip_duplicates else set()
+    seen: set = set()
     for idx, q in enumerate(questions):
         q.pop("id_tmp", None); q.pop("duplicate", None); q.pop("_include", None)
         try:
@@ -826,7 +1031,7 @@ async def import_commit(payload: dict, user: dict = Depends(require_role('admin'
                     try: q[k] = float(q[k].strip())
                     except Exception: q[k] = 4.0 if k == "marks" else 1.0
             # default subject if AI left it blank
-            if not q.get("subject"): q["subject"] = payload.get("subject_default") or "Physics"
+            if not q.get("subject"): q["subject"] = subject_default or "Physics"
             # sanity: text must exist
             if not (q.get("text") or "").strip():
                 skipped.append({"index": idx, "reason": "empty question text"}); continue
@@ -853,22 +1058,55 @@ async def import_commit(payload: dict, user: dict = Depends(require_role('admin'
                     (c.strip().upper() if isinstance(c, str) and len(c.strip()) == 1 and c.strip().isalpha() else c)
                     for c in q["correct"]
                 ]
+            q["correct"] = [str(c) for c in q["correct"]]
+            q["options"] = [str(o) for o in q["options"]]
+
+            if skip_duplicates:
+                sig = _qsig(q)
+                if sig in existing or sig in seen:
+                    dup_skipped += 1; continue
+                seen.add(sig)
 
             m = QuestionIn(**{k: v for k, v in q.items() if k in QuestionIn.model_fields}).model_dump()
             m.update({"id": new_id(), "created_at": now_iso(), "created_by": user["id"],
                       "source": q.get("source", "import")})
-            # insert one-by-one so a single bad row can't kill the batch
-            try:
-                await db.questions.insert_one(dict(m))
-                m.pop("_id", None)
-                inserted.append(m)
-            except Exception as ie:
-                skipped.append({"index": idx, "reason": f"db insert: {ie}"})
-                log.warning(f"insert skip row {idx}: {ie}")
+            externalize_question(m)   # pictures → files on disk, short /api/media/ links in the DB
+            docs.append((idx, m))
         except Exception as e:
-            skipped.append({"index": idx, "reason": str(e)})
+            skipped.append({"index": idx, "reason": str(e)[:300]})
             log.warning(f"commit skip row {idx}: {e}")
-    return {"inserted": len(inserted), "skipped": len(skipped), "skipped_details": skipped[:20]}
+
+    inserted = 0
+    for i in range(0, len(docs), 500):
+        batch = docs[i:i + 500]
+        try:
+            await db.questions.insert_many([dict(m) for _, m in batch], ordered=False)
+            inserted += len(batch)
+        except BulkWriteError as bwe:
+            det = bwe.details or {}
+            inserted += det.get("nInserted", 0)
+            for we in det.get("writeErrors", [])[:50]:
+                bi = we.get("index", 0)
+                skipped.append({"index": batch[bi][0] if bi < len(batch) else -1,
+                                "reason": f"db insert: {we.get('errmsg', '')[:200]}"})
+        except Exception:
+            # fall back to one-by-one so a single bad row can't kill the batch
+            for idx, m in batch:
+                try:
+                    await db.questions.insert_one(dict(m)); inserted += 1
+                except Exception as ie:
+                    skipped.append({"index": idx, "reason": f"db insert: {ie}"})
+    return {"inserted": inserted, "skipped": len(skipped), "duplicates_skipped": dup_skipped,
+            "skipped_details": skipped[:20]}
+
+
+@api.post("/import/commit")
+async def import_commit(payload: dict, user: dict = Depends(require_role('admin'))):
+    questions = payload.get("questions", []) or []
+    if not isinstance(questions, list):
+        raise HTTPException(400, "questions must be a list")
+    return await _commit_questions(questions, user, payload.get("subject_default"),
+                                   skip_duplicates=bool(payload.get("skip_duplicates", False)))
 
 
 @api.post("/import/ai-difficulty")
@@ -3617,6 +3855,12 @@ async def _startup():
     await db.users.create_index("email", unique=True)
     await db.users.create_index("referral_code")
     await db.questions.create_index("subject")
+    try:
+        await db.questions.create_index("text")  # fast duplicate checks on bulk imports
+        await db.import_job_chunks.create_index("job_id")
+        await db.import_job_chunks.create_index("expire_at", expireAfterSeconds=0)
+    except Exception:
+        pass
     await db.attempts.create_index([("user_id", 1), ("status", 1)])
     await db.attempts.create_index([("test_id", 1), ("status", 1)])
     await db.error_logs.create_index([("ts", -1)])

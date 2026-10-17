@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir -r requirements.vps.txt
 
 COPY . .
 
-RUN useradd -m appuser && chown -R appuser /app
+RUN mkdir -p /app/media && useradd -m appuser && chown -R appuser /app
 USER appuser
 
 EXPOSE 8001
