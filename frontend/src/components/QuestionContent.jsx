@@ -3,7 +3,11 @@ import { ZoomIn } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import MathText from "./MathText";
 
-export const safeImageUrl = (url) => typeof url === "string" && /^(https?:\/\/|data:image\/(png|jpe?g|webp);base64,|\/(?!\/))/.test(url) ? url : "";
+// Pictures saved by imports live at /api/media/<hash>.png on the backend; when the frontend is
+// served from another origin (preview / app wrapper) prefix the backend URL.
+const BACKEND = process.env.REACT_APP_BACKEND_URL || "";
+export const resolveMediaUrl = (url) => (typeof url === "string" && url.startsWith("/api/media/") ? `${BACKEND}${url}` : url);
+export const safeImageUrl = (url) => typeof url === "string" && /^(https?:\/\/|data:image\/(png|jpe?g|webp|gif);base64,|\/(?!\/))/.test(url) ? resolveMediaUrl(url) : "";
 
 export const QuestionImage = ({ src, alt = "Question diagram", testId }) => {
   const uid = useId().replace(/:/g, "");

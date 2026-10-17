@@ -1,5 +1,8 @@
 import { useState } from "react";
 import { importApi } from "@/lib/api";
+import { Progress } from "@/components/ui/progress";
+import { Download, XCircle, Camera } from "lucide-react";
+import ScreenshotImport from "@/components/admin/ScreenshotImport";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,10 +26,30 @@ const FORMATS = [
   { icon: FileText, name: "PageMaker", exts: ".pmd,.p65,.pm6,.pm7" },
 ];
 
+const SHEET_RE = /\.(xlsx|xls|xlsm|csv|tsv)$/i;
+const isSheet = (f) => SHEET_RE.test(f?.name || "");
+const REVIEW_PAGE = 50;
+const COMMIT_BATCH = 300;
+
 export default function ImportWizard() {
   const [step, setStep] = useState(1);
-  const [file, setFile] = useState(null);
-  const [uploadMode, setUploadMode] = useState("upload"); // upload | upload_ai
+  const [files, setFiles] = useState([]);
+  const file = files[0] || null;
+  // Bulk options: save standard-format spreadsheets straight to the bank, skip repeats.
+  const [saveDirect, setSaveDirect] = useState(false);
+  const [skipDup, setSkipDup] = useState(true);
+  const [progress, setProgress] = useState(null); // {index,total,name,pct,msg}
+  const [results, setResults] = useState([]); // per-file summaries
+  const [visible, setVisible] = useState(REVIEW_PAGE);
+  const [commitProgress, setCommitProgress] = useState(null);
+  const [dragOver, setDragOver] = useState(false);
+  const chooseFiles = (list) => {
+    const arr = Array.from(list || []);
+    setFiles(arr);
+    setSaveDirect(arr.length > 0 && arr.every(isSheet));
+  };
+  // Two ways in: upload any file, or paste screenshots of a question (+ answer) for the AI
+  const [source, setSource] = useState("file"); // file | screenshot
   const [generating, setGenerating] = useState(false);
   const [subjectDefault, setSubjectDefault] = useState("Physics");
   const [parsing, setParsing] = useState(false);
@@ -45,11 +68,13 @@ export default function ImportWizard() {
 
   // Poll a background import job until it finishes. Keeps the HTTP requests short
   // so the platform's 60s gateway timeout never fires on long AI extractions.
-  const pollImportJob = async (jobId) => {
+  const pollImportJob = async (jobId, onProgress) => {
     const started = Date.now();
     const TIMEOUT_MS = 60 * 60 * 1000; // 60 min ceiling — big files can take a long time
+    let wait = 800;
     while (Date.now() - started < TIMEOUT_MS) {
-      await new Promise((res) => setTimeout(res, 2500));
+      await new Promise((res) => setTimeout(res, wait));
+      wait = Math.min(2500, wait + 400);
       let job;
       try {
         job = await importApi.jobStatus(jobId);
@@ -57,6 +82,7 @@ export default function ImportWizard() {
         if (e?.response?.status === 404) continue; // not visible yet
         throw e;
       }
+      if (onProgress && job.progress) onProgress(job.progress);
       if (job.status === "done") return job.result;
       if (job.status === "error") throw new Error(job.error || "Extraction failed");
     }
@@ -76,22 +102,29 @@ export default function ImportWizard() {
     try {
       // Only send question text/options. Keep full original rows (including diagrams)
       // in the browser and merge each generated answer back by its index.
+      // The server accepts max 300 per job, so larger imports go in batches.
       const payload = questionRows.map((q) => ({
         type: q.type, subject: q.subject, text: q.text,
         options: q.options || [], correct: q.correct || [],
         explanation: q.explanation || "", has_image: Boolean(q.image_url),
       }));
-      const { job_id } = await importApi.answerStart(payload);
-      const result = await pollImportJob(job_id);
-      const answers = new Map((result.answers || []).map((a) => [a.index, a]));
+      const answers = new Map();
+      let generatedCount = 0; let warnCount = 0;
+      for (let off = 0; off < payload.length; off += 300) {
+        const { job_id } = await importApi.answerStart(payload.slice(off, off + 300));
+        const result = await pollImportJob(job_id);
+        (result.answers || []).forEach((a) => answers.set(a.index + off, a));
+        generatedCount += result.generated_count || 0;
+        warnCount += result.warnings?.length || 0;
+      }
       setRows((prev) => prev.map((q, i) => {
         const answer = answers.get(i);
         if (!answer || !isMissingAnswer(q)) return q;
         const { index, ...patch } = answer;
         return { ...q, ...patch };
       }));
-      toast.success(`Generated ${result.generated_count || 0} answers for review`);
-      if (result.warnings?.length) toast.warning(`${result.warnings.length} question(s) need manual review`);
+      toast.success(`Generated ${generatedCount} answers for review`);
+      if (warnCount) toast.warning(`${warnCount} question(s) need manual review`);
     } catch (e) {
       toast.error(e?.response?.data?.detail || e?.message || "AI answer generation failed");
     } finally {
@@ -99,76 +132,126 @@ export default function ImportWizard() {
     }
   };
 
+  const buildForm = (f, direct) => {
+    const fd = new FormData();
+    fd.append("file", f);
+    // Visual extraction preserves PDF questions, options, diagrams and printed keys.
+    // Word/Excel use existing text/tabular parsing with AI fallback.
+    if (/\.pdf$/i.test(f.name)) fd.append("prefer_ai", "true");
+    fd.append("subject_default", subjectDefault);
+    // Optional batch categorisation — only send fields the admin actually set.
+    if (cat.type && cat.type !== "auto") fd.append("type_default", cat.type);
+    if (cat.difficulty && cat.difficulty !== "auto") fd.append("difficulty_default", cat.difficulty);
+    if (cat.status) fd.append("status_default", cat.status);
+    if (cat.chapter.trim()) fd.append("chapter_default", cat.chapter.trim());
+    if (cat.topic.trim()) fd.append("topic_default", cat.topic.trim());
+    if (cat.section.trim()) fd.append("section_default", cat.section.trim());
+    if (cat.exam.trim()) fd.append("exam_default", cat.exam.trim());
+    if (cat.student_class.trim()) fd.append("class_default", cat.student_class.trim());
+    if (cat.year.trim()) fd.append("year_default", cat.year.trim());
+    if (cat.tags.trim()) fd.append("tags_default", cat.tags.trim());
+    if (String(cat.marks).trim() !== "") fd.append("marks_default", cat.marks);
+    if (String(cat.negative_marks).trim() !== "") fd.append("negative_default", cat.negative_marks);
+    fd.append("use_ai", "true");
+    fd.append("import_mode", "extract");
+    if (direct) {
+      fd.append("auto_commit", "true");
+      fd.append("skip_duplicates", skipDup ? "true" : "false");
+    }
+    return fd;
+  };
+
   const runParse = async () => {
-    if (!file) return toast.error("Choose a question paper first");
+    if (!files.length) return toast.error("Choose a question paper first");
     setParsing(true);
+    setResults([]);
+    const allRows = [];
+    const summaries = [];
+    let usedAi = false; let usedRegex = false; let keyApplied = 0;
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      // Visual extraction preserves PDF questions, options, diagrams and printed keys.
-      // Word/Excel use existing text/tabular parsing with AI fallback.
-      if (/\.pdf$/i.test(file.name)) fd.append("prefer_ai", "true");
-      fd.append("subject_default", subjectDefault);
-      // Optional batch categorisation — only send fields the admin actually set.
-      if (cat.type && cat.type !== "auto") fd.append("type_default", cat.type);
-      if (cat.difficulty && cat.difficulty !== "auto") fd.append("difficulty_default", cat.difficulty);
-      if (cat.status) fd.append("status_default", cat.status);
-      if (cat.chapter.trim()) fd.append("chapter_default", cat.chapter.trim());
-      if (cat.topic.trim()) fd.append("topic_default", cat.topic.trim());
-      if (cat.section.trim()) fd.append("section_default", cat.section.trim());
-      if (cat.exam.trim()) fd.append("exam_default", cat.exam.trim());
-      if (cat.student_class.trim()) fd.append("class_default", cat.student_class.trim());
-      if (cat.year.trim()) fd.append("year_default", cat.year.trim());
-      if (cat.tags.trim()) fd.append("tags_default", cat.tags.trim());
-      if (String(cat.marks).trim() !== "") fd.append("marks_default", cat.marks);
-      if (String(cat.negative_marks).trim() !== "") fd.append("negative_default", cat.negative_marks);
-      fd.append("use_ai", "true");
-      fd.append("import_mode", "extract");
-      // Start the job in the background and poll — avoids the 60s gateway timeout
-      // on long AI extractions (big PDFs/DOCX). The AI does the whole job server-side.
-      const { job_id } = await importApi.start(fd);
-      const r = await pollImportJob(job_id);
-      setParsed(r);
-      const extracted = (r.questions || []).map((q) => ({ ...q, _include: true }));
-      setRows(extracted);
-      setStep(3);
-      if (uploadMode === "upload_ai" && extracted.length) {
-        await generateAnswers(extracted);
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        const direct = saveDirect && isSheet(f);
+        setProgress({ index: i, total: files.length, name: f.name, pct: 1, msg: "Uploading…" });
+        try {
+          // Start the job in the background and poll — avoids the 60s gateway timeout
+          // on long AI extractions (big PDFs/DOCX). The AI does the whole job server-side.
+          const { job_id } = await importApi.start(buildForm(f, direct));
+          const r = await pollImportJob(job_id, (p) => setProgress({ index: i, total: files.length, name: f.name, pct: p.pct, msg: p.msg }));
+          usedAi = usedAi || r.used_ai; usedRegex = usedRegex || r.used_regex;
+          keyApplied += r.answer_key_applied || 0;
+          if (direct) {
+            summaries.push({ name: f.name, direct: true, count: r.count, errors: r.errors || [], ...(r.commit || { inserted: 0, skipped: 0, duplicates_skipped: 0 }) });
+          } else {
+            const qs = (r.questions || []).map((q) => ({ ...q, _include: !(skipDup && q.duplicate), _file: files.length > 1 ? f.name : undefined }));
+            allRows.push(...qs);
+            summaries.push({ name: f.name, direct: false, count: r.count, errors: r.errors || [] });
+          }
+        } catch (e) {
+          summaries.push({ name: f.name, failed: true, error: e?.response?.data?.detail || e?.message || "Extraction failed" });
+        }
       }
-      if (r.count > 0) {
-        const badge = r.used_regex && !r.used_ai ? " (fast regex)" : r.used_ai ? " (AI-assisted)" : "";
-        toast.success(`Detected ${r.count} question(s)${badge}`);
-        if (r.answer_key_applied > 0) toast.success(`Answer key matched ${r.answer_key_applied} question(s)`);
-      } else if (r.errors?.length) {
-        toast.warning("No questions detected — see notes below");
+      setResults(summaries);
+      const reviewFiles = summaries.filter((s) => !s.direct && !s.failed);
+      const multi = files.length > 1;
+      if (reviewFiles.length) {
+        setParsed({
+          count: allRows.length,
+          filename: multi ? `${reviewFiles.length} file(s)` : files[0].name,
+          used_ai: usedAi, used_regex: usedRegex, answer_key_applied: keyApplied,
+          errors: summaries.flatMap((s) => s.failed ? [`${s.name}: ${s.error}`] : (s.errors || []).map((e) => (multi ? `${s.name}: ${e}` : e))),
+        });
+        setRows(allRows);
+        setVisible(REVIEW_PAGE);
+        setStep(3);
+        if (allRows.length > 0) {
+          const badge = usedRegex && !usedAi ? " (fast)" : usedAi ? " (AI-assisted)" : "";
+          toast.success(`Detected ${allRows.length} question(s)${badge}`);
+          if (keyApplied > 0) toast.success(`Answer key matched ${keyApplied} question(s)`);
+        } else {
+          toast.warning("No questions detected — see notes below");
+        }
+      } else {
+        setStep(4);
+        const saved = summaries.reduce((a, s) => a + (s.inserted || 0), 0);
+        if (saved) toast.success(`Saved ${saved} question(s) to the bank`);
+        else toast.warning("Nothing new was saved — see the details");
       }
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || e?.message || "Extraction failed");
-    } finally { setParsing(false); }
+    } finally { setParsing(false); setProgress(null); }
   };
 
   const commit = async () => {
-    const selected = rows.filter((r) => r._include).map(({ _include, duplicate, id_tmp, ...rest }) => ({
+    const selected = rows.filter((r) => r._include).map(({ _include, duplicate, id_tmp, _file, _sheet, _row, ...rest }) => ({
       ...rest,
       status: rest.answer_review_required || isMissingAnswer(rest) ? "review" :
         cat.status === "draft" || cat.status === "archived" || cat.status === "review" ? cat.status : "approved",
     }));
     if (!selected.length) return toast.error("Select at least one question");
     setCommitting(true);
+    let inserted = 0; let skipped = 0; let dups = 0; let firstReason = "";
     try {
-      const r = await importApi.commit(selected);
-      if (r.inserted > 0 && r.skipped > 0) {
-        toast.success(`Saved ${r.inserted} · Skipped ${r.skipped} (empty or malformed)`);
-      } else if (r.inserted > 0) {
-        toast.success(`Saved ${r.inserted} question(s) to bank`);
+      // Save in batches so thousands of questions never hit request-size limits.
+      for (let off = 0; off < selected.length; off += COMMIT_BATCH) {
+        setCommitProgress({ done: off, total: selected.length });
+        const r = await importApi.commit(selected.slice(off, off + COMMIT_BATCH), { skip_duplicates: skipDup, subject_default: subjectDefault });
+        inserted += r.inserted || 0; skipped += r.skipped || 0; dups += r.duplicates_skipped || 0;
+        if (!firstReason && r.skipped_details?.[0]?.reason) firstReason = r.skipped_details[0].reason;
+      }
+      if (inserted > 0) {
+        const extra = [skipped ? `skipped ${skipped} (empty or malformed)` : "", dups ? `${dups} duplicate(s) ignored` : ""].filter(Boolean).join(" · ");
+        toast.success(`Saved ${inserted} question(s) to bank${extra ? " · " + extra : ""}`);
       } else {
-        toast.error(`Nothing saved. ${r.skipped_details?.[0]?.reason || "Please check the rows."}`);
-        setCommitting(false); return;
+        toast.error(dups ? `Nothing saved — all ${dups} question(s) are already in the bank.` : `Nothing saved. ${firstReason || "Please check the rows."}`);
+        return;
+      }
+      if (source === "screenshot") {
+        setRows([]); setParsed(null); setVisible(REVIEW_PAGE);
+        return;
       }
       nav("/admin/questions");
     } catch (e) {
-      toast.error(e?.response?.data?.detail || e?.message || "Save failed");
-    } finally { setCommitting(false); }
+      toast.error((inserted ? `Saved ${inserted}, then: ` : "") + (e?.response?.data?.detail || e?.message || "Save failed"));
+    } finally { setCommitting(false); setCommitProgress(null); }
   };
 
   const updateRow = (i, patch) => setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
@@ -213,8 +296,47 @@ export default function ImportWizard() {
         ))}
       </div>
 
-      {step <= 2 && (
+      <div className="grid sm:grid-cols-2 gap-3" data-testid="import-sources">
+        <button type="button" data-testid="source-file"
+          onClick={() => { setSource("file"); setRows([]); setParsed(null); setStep(1); }}
+          className={`text-left rounded-2xl border-2 p-4 ${source === "file" ? "border-primary bg-primary/5" : "border-border"}`}>
+          <div className="font-semibold flex items-center gap-2"><Upload className="h-4 w-4" /> Upload file</div>
+          <p className="mt-1 text-xs text-muted-foreground">Excel (standard format), Word, PDF, PowerPoint, images — one or many files, imported directly</p>
+        </button>
+        <button type="button" data-testid="source-screenshot"
+          onClick={() => { setSource("screenshot"); setRows([]); setParsed(null); setStep(1); setResults([]); }}
+          className={`text-left rounded-2xl border-2 p-4 ${source === "screenshot" ? "border-primary bg-primary/5" : "border-border"}`}>
+          <div className="font-semibold flex items-center gap-2"><Camera className="h-4 w-4" /> Screenshot se question</div>
+          <p className="mt-1 text-xs text-muted-foreground">Paste a screenshot of the question and its answer — AI writes the question, options, answer and solution</p>
+        </button>
+      </div>
+
+      {source === "screenshot" && (
+        <ScreenshotImport pollImportJob={pollImportJob} onGenerated={(qs, notes) => {
+          setRows((prev) => [...prev, ...qs.map((q) => ({ ...q, _include: !(skipDup && q.duplicate) }))]);
+          setParsed((p) => ({
+            count: (p?.count || 0) + qs.length, filename: "screenshots", used_ai: true, used_regex: false,
+            errors: [...(p?.errors || []), ...(notes || [])],
+          }));
+        }} />
+      )}
+
+      {source === "file" && step <= 2 && (
         <Card className="en-card p-6 space-y-6">
+          <div data-testid="standard-format-card" className="rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+            <FileSpreadsheet className="h-8 w-8 text-emerald-600 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold">Standard upload format (recommended)</div>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                One question per row: Subject · Chapter · Question · Option A–D · Correct Answer · Solution.
+                Formulas in LaTeX ($x^2$), pictures can be pasted into the row. Thousands of questions upload in seconds — no AI needed.
+              </p>
+            </div>
+            <a href={importApi.templateUrl()} download="FNJEE_Question_Upload_Format.xlsx" data-testid="download-template-btn">
+              <Button type="button" variant="outline" className="rounded-full w-full sm:w-auto"><Download className="h-4 w-4 mr-2" /> Download sample Excel</Button>
+            </a>
+          </div>
+
           <div>
             <Label className="text-sm font-semibold">Supported formats</Label>
             <div className="flex flex-wrap gap-2 mt-3">
@@ -226,27 +348,50 @@ export default function ImportWizard() {
             </div>
           </div>
 
-          <div className="grid sm:grid-cols-2 gap-3" data-testid="upload-modes">
-            <button type="button" data-testid="mode-upload" onClick={() => setUploadMode("upload")}
-              className={`text-left rounded-2xl border-2 p-4 ${uploadMode === "upload" ? "border-primary bg-primary/5" : "border-border"}`}>
-              <div className="font-semibold flex items-center gap-2"><Upload className="h-4 w-4" /> Upload</div>
-              <p className="mt-1 text-xs text-muted-foreground">Extract original questions and available answers</p>
-            </button>
-            <button type="button" data-testid="mode-upload-ai" onClick={() => setUploadMode("upload_ai")}
-              className={`text-left rounded-2xl border-2 p-4 ${uploadMode === "upload_ai" ? "border-primary bg-primary/5" : "border-border"}`}>
-              <div className="font-semibold flex items-center gap-2"><Zap className="h-4 w-4" /> Upload + AI Generate Answers</div>
-              <p className="mt-1 text-xs text-muted-foreground">Generate missing answers with configured Gemini AI</p>
-            </button>
-          </div>
-
-          <label htmlFor="file-input" className="block cursor-pointer border-2 border-dashed border-border rounded-2xl p-10 text-center hover:border-primary transition-colors duration-200">
+          <label htmlFor="file-input" data-testid="file-dropzone"
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => { e.preventDefault(); setDragOver(false); chooseFiles(e.dataTransfer.files); }}
+            className={`block cursor-pointer border-2 border-dashed rounded-2xl p-10 text-center hover:border-primary transition-colors duration-200 ${dragOver ? "border-primary bg-primary/5" : "border-border"}`}>
             <Upload className="h-8 w-8 mx-auto text-muted-foreground" />
-            <div className="mt-3 font-medium">{file ? file.name : "Click to choose a question paper"}</div>
-            <div className="text-xs text-muted-foreground mt-1">PDF · Word · Excel · PowerPoint · Images · Text · PageMaker</div>
-            <input data-testid="file-input" id="file-input" type="file" className="hidden"
-              accept=".xlsx,.xls,.docx,.pdf,.pptx,.pmd,.p65,.pm6,.pm7,.txt,.csv,.tsv,.rtf,.md,.html,.htm,.jpg,.jpeg,.png,.webp,.gif,.bmp,.tif,.tiff,.heic,.heif"
-              onChange={(e) => setFile(e.target.files?.[0] || null)} />
+            <div className="mt-3 font-medium" data-testid="chosen-files">
+              {files.length === 0 ? "Click or drop question files here (you can pick many at once)"
+                : files.length === 1 ? file.name : `${files.length} files selected`}
+            </div>
+            <div className="text-xs text-muted-foreground mt-1">Excel · CSV · PDF · Word · PowerPoint · Images · Text · PageMaker</div>
+            <input data-testid="file-input" id="file-input" type="file" className="hidden" multiple
+              accept=".xlsx,.xls,.xlsm,.docx,.pdf,.pptx,.pmd,.p65,.pm6,.pm7,.txt,.csv,.tsv,.rtf,.md,.html,.htm,.jpg,.jpeg,.png,.webp,.gif,.bmp,.tif,.tiff,.heic,.heif"
+              onChange={(e) => chooseFiles(e.target.files)} />
           </label>
+          {files.length > 1 && (
+            <div data-testid="file-list" className="flex flex-wrap gap-2 -mt-3">
+              {files.map((f, i) => (
+                <span key={i} className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-muted">
+                  {isSheet(f) ? <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" /> : <FileText className="h-3.5 w-3.5" />}
+                  {f.name}
+                  <button type="button" aria-label={`Remove ${f.name}`} onClick={() => chooseFiles(files.filter((_, j) => j !== i))}>
+                    <XCircle className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          <div className="grid sm:grid-cols-2 gap-3" data-testid="bulk-options">
+            <label className="flex items-start gap-3 rounded-xl border p-3 text-sm cursor-pointer">
+              <input type="checkbox" data-testid="save-direct-toggle" className="mt-0.5 h-4 w-4 accent-primary"
+                checked={saveDirect}
+                onChange={(e) => setSaveDirect(e.target.checked)} />
+              <span><b>Save directly to question bank</b><br />
+                <span className="text-xs text-muted-foreground">For Excel/CSV in the standard format: skips the review screen. Best for big files. Questions without an answer are saved as "review".</span></span>
+            </label>
+            <label className="flex items-start gap-3 rounded-xl border p-3 text-sm cursor-pointer">
+              <input type="checkbox" data-testid="skip-dup-toggle" className="mt-0.5 h-4 w-4 accent-primary"
+                checked={skipDup} onChange={(e) => setSkipDup(e.target.checked)} />
+              <span><b>Skip duplicates</b><br />
+                <span className="text-xs text-muted-foreground">Questions already in the bank (same text and options) are not added again — safe to re-upload a file.</span></span>
+            </label>
+          </div>
 
           <div className="grid md:grid-cols-2 gap-4">
             <div>
@@ -320,15 +465,70 @@ export default function ImportWizard() {
             </div>
           </div>
 
+          {progress && (
+            <div data-testid="import-progress" className="space-y-2 rounded-xl border p-4">
+              <div className="flex justify-between text-sm gap-3">
+                <span className="truncate"><b>{progress.total > 1 ? `File ${progress.index + 1} of ${progress.total}: ` : ""}</b>{progress.name}</span>
+                <span className="tabular-nums shrink-0">{Math.max(0, Math.min(100, progress.pct || 0))}%</span>
+              </div>
+              <Progress value={Math.max(0, Math.min(100, progress.pct || 0))} />
+              <div className="text-xs text-muted-foreground">{progress.msg}</div>
+            </div>
+          )}
+
           <div className="flex justify-end">
             <Button data-testid="parse-btn" onClick={runParse} disabled={parsing} className="rounded-full px-8">
-              <Zap className="h-4 w-4 mr-2" /> {parsing ? "Processing…" : uploadMode === "upload_ai" ? "Upload + Generate Answers" : "Upload & Extract Questions"}
+              <Zap className="h-4 w-4 mr-2" /> {parsing ? "Processing…"
+                : saveDirect && files.length && files.every(isSheet) ? `Upload & save ${files.length > 1 ? files.length + " files" : ""}`.trim()
+                : "Upload & Extract Questions"}
             </Button>
           </div>
         </Card>
       )}
 
-      {step === 3 && parsed && (
+      {source === "file" && step === 4 && (
+        <Card data-testid="import-results" className="en-card p-6 space-y-4">
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div>
+              <h3 className="font-display font-semibold text-lg">Upload finished</h3>
+              <p className="text-sm text-muted-foreground">
+                {results.reduce((a, r) => a + (r.inserted || 0), 0)} question(s) saved ·{" "}
+                {results.reduce((a, r) => a + (r.duplicates_skipped || 0), 0)} duplicate(s) ignored ·{" "}
+                {results.reduce((a, r) => a + (r.skipped || 0), 0)} row(s) skipped
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" className="rounded-full" data-testid="upload-more-btn"
+                onClick={() => { setStep(1); setResults([]); setFiles([]); }}>Upload more</Button>
+              <Button className="rounded-full" data-testid="go-bank-btn" onClick={() => nav("/admin/questions")}>Open question bank</Button>
+            </div>
+          </div>
+          <div className="space-y-2">
+            {results.map((r, i) => (
+              <details key={i} data-testid={`result-file-${i}`} className="rounded-xl border p-3" open={results.length === 1}>
+                <summary className="cursor-pointer text-sm flex flex-wrap items-center gap-2">
+                  {r.failed ? <XCircle className="h-4 w-4 text-destructive" /> : <CheckCircle2 className="h-4 w-4 text-emerald-600" />}
+                  <b className="break-all">{r.name}</b>
+                  {r.failed ? <span className="text-destructive">{r.error}</span> : <>
+                    <Badge variant="secondary" className="rounded-full">{r.count} found</Badge>
+                    <Badge className="rounded-full bg-emerald-600">{r.inserted || 0} saved</Badge>
+                    {!!r.duplicates_skipped && <Badge variant="outline" className="rounded-full">{r.duplicates_skipped} duplicates</Badge>}
+                    {!!r.skipped && <Badge variant="outline" className="rounded-full text-destructive">{r.skipped} skipped</Badge>}
+                    {!!r.errors?.length && <Badge variant="outline" className="rounded-full text-amber-700">{r.errors.length} note(s)</Badge>}
+                  </>}
+                </summary>
+                {!!r.errors?.length && (
+                  <ul className="mt-2 text-xs text-muted-foreground list-disc pl-5 space-y-0.5 max-h-60 overflow-y-auto">
+                    {r.errors.slice(0, 200).map((e, j) => <li key={j}>{e}</li>)}
+                  </ul>
+                )}
+              </details>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {((source === "file" && step === 3) || (source === "screenshot" && rows.length > 0)) && parsed && (
         <Card className="en-card p-6 space-y-4">
           <div className="flex items-center justify-between flex-wrap gap-3">
             <div>
@@ -352,9 +552,9 @@ export default function ImportWizard() {
               <Button variant="outline" className="rounded-full" onClick={addBlankRow} data-testid="add-blank-row">
                 + Add question
               </Button>
-              <Button data-testid="import-start-over" variant="outline" className="rounded-full" onClick={() => { setStep(1); setParsed(null); setRows([]); }}>Start over</Button>
+              <Button data-testid="import-start-over" variant="outline" className="rounded-full" onClick={() => { setStep(1); setParsed(null); setRows([]); setResults([]); }}>Start over</Button>
               <Button data-testid="commit-import" className="rounded-full" onClick={commit} disabled={committing || generating || includedCount === 0}>
-                <CheckCircle2 className="h-4 w-4 mr-2" /> {committing ? "Saving…" : `Submit & save ${includedCount} question(s)`}
+                <CheckCircle2 className="h-4 w-4 mr-2" /> {committing ? (commitProgress ? `Saving ${commitProgress.done}/${commitProgress.total}…` : "Saving…") : `Submit & save ${includedCount} question(s)`}
               </Button>
             </div>
           </div>
@@ -363,13 +563,21 @@ export default function ImportWizard() {
             <div data-testid="parse-warnings" className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-900 dark:text-amber-200 text-sm space-y-1">
               <div className="flex items-start gap-2">
                 <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
-                <div className="space-y-1">{parsed.errors.slice(0, 4).map((e, i) => <div key={i}>{e}</div>)}</div>
+                <div className="space-y-1">
+                  {parsed.errors.slice(0, 4).map((e, i) => <div key={i}>{e}</div>)}
+                  {parsed.errors.length > 4 && (
+                    <details data-testid="all-warnings">
+                      <summary className="cursor-pointer font-medium">Show all {parsed.errors.length} notes</summary>
+                      <ul className="list-disc pl-5 mt-1 max-h-60 overflow-y-auto">{parsed.errors.slice(4).map((e, i) => <li key={i}>{e}</li>)}</ul>
+                    </details>
+                  )}
+                </div>
               </div>
             </div>
           )}
 
           <div className="space-y-3 max-h-[65vh] overflow-y-auto en-scroll pr-1">
-            {rows.map((r, i) => (
+            {rows.slice(0, visible).map((r, i) => (
               <div key={i} data-testid={`review-row-${i}`}
                    className={`p-4 rounded-xl border ${r._include ? "border-primary/40 bg-primary/5" : "border-border"}`}>
                 <div className="flex items-start gap-3">
@@ -379,6 +587,8 @@ export default function ImportWizard() {
                   <div className="flex-1 min-w-0 space-y-3">
                     <div className="flex flex-wrap gap-2 items-center">
                       <span className="font-semibold text-sm">Question {r.source_number || i + 1}</span>
+                      {r._sheet && <span className="text-xs text-muted-foreground">{r._file ? `${r._file} · ` : ""}{r._sheet} row {r._row}</span>}
+                      {!r._sheet && r._file && <span className="text-xs text-muted-foreground">{r._file}</span>}
                       <Badge variant="secondary" className="rounded-full">{r.type}</Badge>
                       <Badge variant="outline" className="rounded-full">{r.subject}</Badge>
                       <Badge variant="outline" className="rounded-full">{r.difficulty}</Badge>
@@ -417,8 +627,13 @@ export default function ImportWizard() {
                                 className={`h-7 w-7 rounded-full text-xs font-bold grid place-items-center border shrink-0 ${
                                   isCorrect ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground"
                                 }`}>{letter}</button>
-                              <Input value={opt} data-testid={`row-${i}-opt-${letter}-input`}
-                                onChange={(e) => { const opts = [...r.options]; opts[oi] = e.target.value; updateRow(i, { options: opts }); }} />
+                              <div className="flex-1 min-w-0 space-y-1">
+                                <Input value={opt} data-testid={`row-${i}-opt-${letter}-input`}
+                                  onChange={(e) => { const opts = [...r.options]; opts[oi] = e.target.value; updateRow(i, { options: opts }); }} />
+                                {/[$]|!\[/.test(opt || "") && (
+                                  <div data-testid={`row-${i}-opt-${letter}-preview`} className="text-sm px-1"><MathText>{opt}</MathText></div>
+                                )}
+                              </div>
                             </div>
                           );
                         })}
@@ -455,6 +670,14 @@ export default function ImportWizard() {
                 </div>
               </div>
             ))}
+            {rows.length > visible && (
+              <div className="flex justify-center gap-2 py-2">
+                <Button variant="outline" className="rounded-full" data-testid="show-more-rows" onClick={() => setVisible((v) => v + REVIEW_PAGE)}>
+                  Show {Math.min(REVIEW_PAGE, rows.length - visible)} more
+                </Button>
+                <Button variant="ghost" className="rounded-full" onClick={() => setVisible(rows.length)}>Show all {rows.length}</Button>
+              </div>
+            )}
             {rows.length === 0 && (
               <div className="text-center text-muted-foreground py-8">
                 No questions parsed.

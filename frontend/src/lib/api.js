@@ -51,8 +51,24 @@ export const importApi = {
   }).then((r) => r.data),
   answerStart: (questions) => api.post("/import/answers/start", { questions }).then((r) => r.data),
   jobStatus: (jobId) => api.get(`/import/jobs/${jobId}`).then((r) => r.data),
-  commit: (questions) => api.post("/import/commit", { questions }).then((r) => r.data),
+  commit: (questions, opts = {}) => api.post("/import/commit", { questions, ...opts }).then((r) => r.data),
   predictDifficulty: (texts) => api.post("/import/ai-difficulty", { texts }).then((r) => r.data),
+  // Standard FNJEE Excel upload format (public, no login needed)
+  templateUrl: () => `${API_BASE}/import/template`,
+  // Screenshot(s) of a question (+ answer) → AI → question(s); returns {job_id}, poll jobStatus
+  screenshotStart: (formData) => api.post("/import/screenshot/start", formData, {
+    headers: { "Content-Type": "multipart/form-data" }
+  }).then((r) => r.data),
+  // Question bank → same Excel format (admin only, so fetched with the auth header)
+  exportBank: (params) => api.get("/questions/export", { params, responseType: "blob" }).then((r) => r.data),
+};
+
+export const downloadBlob = (blob, filename) => {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
 };
 
 export const testsApi = {
