@@ -1,0 +1,95 @@
+name: Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "android-app/**"
+      - ".github/workflows/android.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      HAS_KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+    defaults:
+      run:
+        working-directory: android-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Capacitor
+        run: npm install --no-audit --no-fund
+
+      - name: Create Android project
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+        run: |
+          sudo apt-get install -y imagemagick >/dev/null
+          npx cap add android
+          ./prepare-android.sh
+          npx cap sync android
+
+      - name: Build debug APK (installable directly)
+        working-directory: android-app/android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk ../FNJEE.apk
+
+      - name: Build signed release (only if signing secrets are set)
+        if: env.HAS_KS == 'true'
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        working-directory: android-app/android
+        run: |
+          echo "$KS" | base64 -d > "$RUNNER_TEMP/fnjee.jks"
+          ./gradlew --no-daemon assembleRelease bundleRelease
+          BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          "$ANDROID_HOME/build-tools/$BT/zipalign" -f 4 app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
+          "$ANDROID_HOME/build-tools/$BT/apksigner" sign --ks "$RUNNER_TEMP/fnjee.jks" --ks-pass env:KS_PASS \
+            --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASS --out ../FNJEE-release.apk aligned.apk
+          jarsigner -keystore "$RUNNER_TEMP/fnjee.jks" -storepass "$KS_PASS" -keypass "$KEY_PASS" \
+            -signedjar ../FNJEE-release.aab app/build/outputs/bundle/release/app-release.aab "$KEY_ALIAS"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnjee-android-apk
+          path: |
+            android-app/FNJEE.apk
+            android-app/FNJEE-release.apk
+            android-app/FNJEE-release.aab
+          if-no-files-found: ignore
+
+      - name: Publish to Releases (tag android-latest)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-latest
+          name: FNJEE Android app (latest)
+          body: "Download **FNJEE.apk** below and install it on your Android phone. Build #${{ github.run_number }}."
+          prerelease: false
+          make_latest: true
+          files: |
+            android-app/FNJEE.apk
+            android-app/FNJEE-release.apk
+            android-app/FNJEE-release.aab
+          fail_on_unmatched_files: false

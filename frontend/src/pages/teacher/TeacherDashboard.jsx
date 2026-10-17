@@ -29,7 +29,7 @@ export default function TeacherDashboard() {
 
   useEffect(() => {
     teacherApi.myPerms().then((r) => setPerms(r.teacher_perms)).catch(() => {});
-    questionsApi.list({ limit: 500 }).then((r) => setQCount(r.length)).catch(() => {});
+    questionsApi.page({ page: 1, page_size: 10 }).then((r) => setQCount(r.total)).catch(() => {});
     testsApi.list().then(setPapers).catch(() => {});
   }, []);
 

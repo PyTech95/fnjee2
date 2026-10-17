@@ -1,0 +1,26 @@
+{
+  "appId": "com.fnjee.app",
+  "appName": "FNJEE",
+  "webDir": "www",
+  "server": {
+    "url": "https://fnjee.com",
+    "androidScheme": "https",
+    "allowNavigation": ["fnjee.com", "*.fnjee.com"]
+  },
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1200,
+      "backgroundColor": "#FAF7F2",
+      "showSpinner": false
+    },
+    "StatusBar": {
+      "backgroundColor": "#FF3B30",
+      "style": "DARK"
+    }
+  }
+}

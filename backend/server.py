@@ -345,16 +345,8 @@ async def purge_all_users(payload: dict, user: dict = Depends(require_role('admi
             "deleted_attempts": (da.deleted_count if da else 0)}
 
 
-@api.get("/questions")
-async def list_questions(
-    subject: Optional[str] = None, chapter: Optional[str] = None,
-    topic: Optional[str] = None, difficulty: Optional[str] = None,
-    q_type: Optional[str] = None, status_f: Optional[str] = None,
-    exam: Optional[str] = None, student_class: Optional[str] = None,
-    year: Optional[str] = None, series: Optional[str] = None,
-    search: Optional[str] = None, limit: int = 200,
-    user: dict = Depends(require_role('admin', 'teacher')),
-):
+def _question_filter(user: dict, subject=None, chapter=None, topic=None, difficulty=None, q_type=None,
+                     status_f=None, exam=None, student_class=None, year=None, series=None, search=None) -> dict:
     q: dict = {}
     if subject: q["subject"] = subject
     if chapter: q["chapter"] = chapter
@@ -366,7 +358,7 @@ async def list_questions(
     if student_class: q["student_class"] = student_class
     if year: q["year"] = year
     if series: q["series"] = series
-    if search: q["text"] = {"$regex": search, "$options": "i"}
+    if search: q["text"] = {"$regex": re.escape(search), "$options": "i"}
     q["personal"] = {"$ne": True}
     # Teachers only see questions within their granted subjects (empty = unrestricted).
     # Exam/class are metadata that legacy questions may lack, so they are not hard-filtered here.
@@ -378,8 +370,53 @@ async def list_questions(
                 q["subject"] = subject
             else:
                 q["subject"] = {"$in": allowed}
-    docs = await db.questions.find(q, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    return q
+
+
+@api.get("/questions")
+async def list_questions(
+    subject: Optional[str] = None, chapter: Optional[str] = None,
+    topic: Optional[str] = None, difficulty: Optional[str] = None,
+    q_type: Optional[str] = None, status_f: Optional[str] = None,
+    exam: Optional[str] = None, student_class: Optional[str] = None,
+    year: Optional[str] = None, series: Optional[str] = None,
+    search: Optional[str] = None, limit: int = 200, skip: int = 0,
+    user: dict = Depends(require_role('admin', 'teacher')),
+):
+    q = _question_filter(user, subject, chapter, topic, difficulty, q_type, status_f, exam, student_class,
+                         year, series, search)
+    limit = max(1, min(int(limit or 200), 2000))
+    docs = await db.questions.find(q, {"_id": 0}).sort("created_at", -1).skip(max(0, int(skip or 0))).to_list(limit)
     return docs
+
+
+@api.get("/questions/page")
+async def list_questions_page(
+    subject: Optional[str] = None, chapter: Optional[str] = None,
+    topic: Optional[str] = None, difficulty: Optional[str] = None,
+    q_type: Optional[str] = None, status_f: Optional[str] = None,
+    exam: Optional[str] = None, student_class: Optional[str] = None,
+    year: Optional[str] = None, series: Optional[str] = None,
+    search: Optional[str] = None, page: int = 1, page_size: int = 50,
+    user: dict = Depends(require_role('admin', 'teacher')),
+):
+    """One page of the question bank + the total, so big banks (30k+) never load at once."""
+    q = _question_filter(user, subject, chapter, topic, difficulty, q_type, status_f, exam, student_class,
+                         year, series, search)
+    page_size = max(10, min(int(page_size or 50), 200))
+    page = max(1, int(page or 1))
+    total = await db.questions.count_documents(q)
+    items = await db.questions.find(q, {"_id": 0}).sort("created_at", -1) \
+        .skip((page - 1) * page_size).to_list(page_size)
+    return {"items": items, "total": total, "page": page, "page_size": page_size,
+            "pages": max(1, (total + page_size - 1) // page_size)}
+
+
+@api.get("/questions/chapters")
+async def question_chapters(subject: Optional[str] = None, user: dict = Depends(require_role('admin', 'teacher'))):
+    q = _question_filter(user, subject)
+    return sorted(c for c in await db.questions.distinct("chapter", q) if c)
+
 
 @api.post("/questions")
 async def create_question(inp: QuestionIn, user: dict = Depends(require_role('admin'))):
@@ -3857,6 +3894,8 @@ async def _startup():
     await db.questions.create_index("subject")
     try:
         await db.questions.create_index("text")  # fast duplicate checks on bulk imports
+        await db.questions.create_index([("created_at", -1)])
+        await db.questions.create_index([("subject", 1), ("created_at", -1)])
         await db.import_job_chunks.create_index("job_id")
         await db.import_job_chunks.create_index("expire_at", expireAfterSeconds=0)
     except Exception:
