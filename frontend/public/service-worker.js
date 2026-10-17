@@ -1,4 +1,4 @@
-const CACHE = "mtc-shell-v3";
+const CACHE = "mtc-shell-v4";   // bump on releases that must reach every user
 const ASSETS = ["/", "/index.html", "/manifest.json", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (e) => {
@@ -19,7 +19,7 @@ self.addEventListener("fetch", (e) => {
 
   // Network-first for navigations (fresh app), fall back to cached shell offline.
   if (e.request.mode === "navigate") {
-    e.respondWith(fetch(e.request).catch(() => caches.match("/index.html")));
+    e.respondWith(fetch(e.request, { cache: "no-store" }).catch(() => caches.match("/index.html")));
     return;
   }
   // Stale-while-revalidate for same-origin static assets.

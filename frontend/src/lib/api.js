@@ -23,6 +23,8 @@ export const authApi = {
 
 export const questionsApi = {
   list: (params) => api.get("/questions", { params }).then((r) => r.data),
+  // one page + total: { items, total, page, page_size, pages }
+  page: (params) => api.get("/questions/page", { params }).then((r) => r.data),
   create: (data) => api.post("/questions", data).then((r) => r.data),
   update: (id, data) => api.put(`/questions/${id}`, data).then((r) => r.data),
   patch: (id, data) => api.patch(`/questions/${id}`, data).then((r) => r.data),

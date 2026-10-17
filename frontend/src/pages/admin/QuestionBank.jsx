@@ -28,13 +28,48 @@ export default function QuestionBank() {
   const [deleting, setDeleting] = useState(false);
   const [bulkEdit, setBulkEdit] = useState({ difficulty: "", status: "", chapter: "", topic: "", tags: "" });
 
+  // The bank can hold tens of thousands of questions: load one page at a time
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [total, setTotal] = useState(0);
+  const [pages, setPages] = useState(1);
+  const [search, setSearch] = useState("");
+  useEffect(() => {          // debounce typing in the search box
+    const t = setTimeout(() => setFilters((f) => (f.search === search ? f : { ...f, search })), 400);
+    return () => clearTimeout(t);
+  }, [search]);
+  useEffect(() => { setPage(1); }, [filters, pageSize]);
+
   const load = () => {
     setLoading(true);
-    const params = {};
+    const params = { page, page_size: pageSize };
     Object.entries(filters).forEach(([k, v]) => { if (v && v !== "all") params[k] = v; });
-    questionsApi.list(params).then((d) => { setRows(d); setSel(new Set()); }).finally(() => setLoading(false));
+    questionsApi.page(params).then((d) => {
+      setRows(d.items || []); setTotal(d.total || 0); setPages(d.pages || 1); setSel(new Set());
+    }).catch(() => toast.error("Could not load questions")).finally(() => setLoading(false));
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [filters]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [filters, page, pageSize]);
+  const go = (p) => { setPage(Math.min(Math.max(1, p), pages)); window.scrollTo({ top: 0, behavior: "smooth" }); };
+  const from = total ? (page - 1) * pageSize + 1 : 0;
+  const to = Math.min(page * pageSize, total);
+  const pager = (
+    <div data-testid="bank-pager" className="flex flex-wrap items-center justify-between gap-3 text-sm">
+      <div className="text-muted-foreground">Showing <b>{from.toLocaleString()}–{to.toLocaleString()}</b> of <b>{total.toLocaleString()}</b> questions</div>
+      <div className="flex items-center gap-2">
+        <Select value={String(pageSize)} onValueChange={(v) => setPageSize(Number(v))}>
+          <SelectTrigger data-testid="page-size" className="w-[110px] h-9"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {[30, 40, 50, 100].map((n) => <SelectItem key={n} value={String(n)}>{n} / page</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Button size="sm" variant="outline" className="rounded-full" data-testid="page-first" disabled={page <= 1 || loading} onClick={() => go(1)}>« First</Button>
+        <Button size="sm" variant="outline" className="rounded-full" data-testid="page-prev" disabled={page <= 1 || loading} onClick={() => go(page - 1)}>‹ Prev</Button>
+        <span className="px-2">Page <b>{page}</b> of <b>{pages.toLocaleString()}</b></span>
+        <Button size="sm" variant="outline" className="rounded-full" data-testid="page-next" disabled={page >= pages || loading} onClick={() => go(page + 1)}>Next ›</Button>
+        <Button size="sm" variant="outline" className="rounded-full" data-testid="page-last" disabled={page >= pages || loading} onClick={() => go(pages)}>Last »</Button>
+      </div>
+    </div>
+  );
 
   const remove = async (id) => {
     if (!confirm("Delete this question?")) return;
@@ -111,8 +146,8 @@ export default function QuestionBank() {
         <div className="grid md:grid-cols-4 gap-3">
           <div className="relative">
             <Search className="absolute top-2.5 left-3 h-4 w-4 text-muted-foreground" />
-            <Input data-testid="search-question" placeholder="Search text…" className="pl-9" value={filters.search}
-              onChange={(e) => setFilters({...filters, search: e.target.value})} />
+            <Input data-testid="search-question" placeholder="Search text…" className="pl-9" value={search}
+              onChange={(e) => setSearch(e.target.value)} />
           </div>
           <Select value={filters.subject || "all"} onValueChange={(v) => setFilters({...filters, subject: v === "all" ? "" : v})}>
             <SelectTrigger data-testid="filter-subject"><SelectValue placeholder="Subject" /></SelectTrigger>
@@ -180,6 +215,7 @@ export default function QuestionBank() {
         </Card>
       )}
 
+      {pager}
       <Card className="en-card overflow-hidden">
         <Table>
           <TableHeader>
@@ -233,6 +269,7 @@ export default function QuestionBank() {
           </TableBody>
         </Table>
       </Card>
+      {total > pageSize && pager}
 
       <AlertDialog open={confirmBulk} onOpenChange={setConfirmBulk}>
         <AlertDialogContent data-testid="bulk-delete-confirm">

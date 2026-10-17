@@ -8,14 +8,15 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Camera, ClipboardPaste, Sparkles, XCircle, CheckCircle2, AlertTriangle } from "lucide-react";
+import { Camera, ClipboardPaste, Sparkles, XCircle, CheckCircle2, AlertTriangle, Crop } from "lucide-react";
+import ImageCropDialog from "@/components/admin/ImageCropDialog";
 
 /**
  * Screenshot → question. Paste (Ctrl+V), drop or pick screenshots of a question and of its
  * answer/solution; the AI configured in Admin → AI Settings turns them into an editable question
  * that appears in the review list below (onGenerated).
  */
-const Zone = ({ id, title, hint, shots, active, onActivate, onAdd, onRemove }) => {
+const Zone = ({ id, title, hint, shots, active, onActivate, onAdd, onRemove, onCrop }) => {
   const inputRef = useRef(null);
   const [over, setOver] = useState(false);
   return (
@@ -51,6 +52,11 @@ const Zone = ({ id, title, hint, shots, active, onActivate, onAdd, onRemove }) =
           {shots.map((s, i) => (
             <div key={s.url} className="relative">
               <img src={s.url} alt={`${title} ${i + 1}`} className="h-28 max-w-[220px] object-contain rounded border bg-white" />
+              <button type="button" aria-label="Crop screenshot" data-testid={`shot-crop-${id}-${i}`}
+                onClick={(e) => { e.stopPropagation(); onCrop(i); }}
+                className="absolute bottom-1 right-1 bg-background/90 rounded-full p-1 border shadow-sm">
+                <Crop className="h-4 w-4 text-primary" />
+              </button>
               <button type="button" aria-label="Remove screenshot" data-testid={`shot-remove-${id}-${i}`}
                 onClick={(e) => { e.stopPropagation(); onRemove(i); }}
                 className="absolute -top-2 -right-2 bg-background rounded-full">
@@ -80,12 +86,35 @@ export default function ScreenshotImport({ onGenerated, pollImportJob }) {
       .catch(() => setAi({ ready: false, label: "" }));
   }, []);
 
+  // crop: {zone, index (null = new shot), file, url}
+  const [crop, setCrop] = useState(null);
   const addFiles = useCallback((list, zone) => {
     const imgs = Array.from(list || []).filter((f) => f && f.type?.startsWith("image/"));
     if (!imgs.length) return;
+    if (imgs.length === 1) {           // one screenshot: let the user cut out just the question first
+      setCrop({ zone, index: null, file: imgs[0], url: URL.createObjectURL(imgs[0]) });
+      return;
+    }
     const items = imgs.map((f) => ({ file: f, url: URL.createObjectURL(f) }));
     (zone === "a" ? setAShots : setQShots)((prev) => [...prev, ...items].slice(0, 6));
   }, []);
+  const openCrop = (zone, index) => {
+    const s = (zone === "a" ? aShots : qShots)[index];
+    if (s) setCrop({ zone, index, file: s.file, url: s.url });
+  };
+  const cropDone = (file) => {
+    const c = crop;
+    setCrop(null);
+    if (!c || !file) return;
+    const item = { file, url: file === c.file ? c.url : URL.createObjectURL(file) };
+    const set = c.zone === "a" ? setAShots : setQShots;
+    set((prev) => {
+      if (c.index === null) return [...prev, item].slice(0, 6);
+      const n = [...prev];
+      n[c.index] = item;
+      return n;
+    });
+  };
 
   // Ctrl+V anywhere on the page drops the screenshot into the active box
   useEffect(() => {
@@ -140,11 +169,13 @@ export default function ScreenshotImport({ onGenerated, pollImportJob }) {
 
   return (
     <Card data-testid="screenshot-import" className="en-card p-6 space-y-5">
+      <ImageCropDialog open={!!crop} file={crop?.file} url={crop?.url}
+        onCancel={() => setCrop(null)} onDone={cropDone} />
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="font-display font-semibold text-lg">Screenshot se question</h3>
           <p className="text-sm text-muted-foreground">
-            Question ka screenshot aur answer/solution ka screenshot paste karein → <b>Generate</b> → question neeche dikhega, check karke save karein.
+            Question ka screenshot aur answer/solution ka screenshot paste karein → sirf ek question <b>crop</b> karein → <b>Generate</b> → question neeche dikhega, check karke save karein.
           </p>
         </div>
         <div data-testid="ai-status" className={`text-xs rounded-full px-3 py-1.5 border flex items-center gap-1.5
@@ -158,10 +189,10 @@ export default function ScreenshotImport({ onGenerated, pollImportJob }) {
       <div className="grid md:grid-cols-2 gap-4">
         <Zone id="q" title="1. Question screenshot" hint="Question with its options (one or more images)"
           shots={qShots} active={active === "q"} onActivate={() => setActive("q")}
-          onAdd={(f) => addFiles(f, "q")} onRemove={(i) => setQShots((p) => p.filter((_, j) => j !== i))} />
+          onAdd={(f) => addFiles(f, "q")} onRemove={(i) => setQShots((p) => p.filter((_, j) => j !== i))} onCrop={(i) => openCrop("q", i)} />
         <Zone id="a" title="2. Answer / solution screenshot" hint="Optional — answer key or worked solution"
           shots={aShots} active={active === "a"} onActivate={() => setActive("a")}
-          onAdd={(f) => addFiles(f, "a")} onRemove={(i) => setAShots((p) => p.filter((_, j) => j !== i))} />
+          onAdd={(f) => addFiles(f, "a")} onRemove={(i) => setAShots((p) => p.filter((_, j) => j !== i))} onCrop={(i) => openCrop("a", i)} />
       </div>
 
       <div className="grid sm:grid-cols-4 gap-3">
