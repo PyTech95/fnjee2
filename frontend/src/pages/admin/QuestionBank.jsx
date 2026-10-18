@@ -24,6 +24,8 @@ import {
   EMPTY_FILTERS, SUBJECTS, NOT_SET, STATUS_STYLE, toParams, useQuestionPage, useTaxonomy, classLabel,
 } from "@/lib/bank";
 
+const ISSUE_LABEL = { "no-answer": "Answer nahi hai", "picture-missing": "Picture missing", "ai-unsure": "AI ko yakeen nahi",
+  "ai-answered": "AI answer — check karein", "options-missing": "Options missing" };
 const DIFF_COLOR = { easy: "bg-emerald-500/10 text-emerald-600 border-emerald-500/20", medium: "bg-amber-500/10 text-amber-600 border-amber-500/20", hard: "bg-red-500/10 text-red-600 border-red-500/20" };
 const EMPTY_BULK = { subject: "", student_class: "", chapter: "", topic: "", difficulty: "", status: "", tags: "" };
 
