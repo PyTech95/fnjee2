@@ -16,12 +16,15 @@ import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { QuestionContent, QuestionImage } from "@/components/QuestionContent";
 import MathText from "@/components/MathText";
+import AiFixPanel from "@/components/admin/AiFixPanel";
 
+const ISSUE_LABEL = { "no-answer": "Answer nahi hai", "picture-missing": "Picture missing", "ai-unsure": "AI ko yakeen nahi",
+  "ai-answered": "AI answer — check karein", "options-missing": "Options missing" };
 const DIFF_COLOR = { easy: "bg-emerald-500/10 text-emerald-600 border-emerald-500/20", medium: "bg-amber-500/10 text-amber-600 border-amber-500/20", hard: "bg-red-500/10 text-red-600 border-red-500/20" };
 
 export default function QuestionBank() {
   const [rows, setRows] = useState([]);
-  const [filters, setFilters] = useState({ subject: "", difficulty: "", q_type: "", search: "" });
+  const [filters, setFilters] = useState({ subject: "", difficulty: "", q_type: "", search: "", issue: "" });
   const [loading, setLoading] = useState(false);
   const [sel, setSel] = useState(new Set());
   const [confirmBulk, setConfirmBulk] = useState(false);
@@ -142,7 +145,15 @@ export default function QuestionBank() {
         </div>
       </div>
 
+      <AiFixPanel onFinished={load} onShowIssue={(issue) => setFilters((f) => ({ ...f, issue }))} />
+
       <Card className="en-card p-4">
+        {filters.issue && (
+          <div className="mb-3 flex items-center gap-2 text-sm" data-testid="issue-filter">
+            <Badge variant="secondary">Showing: {ISSUE_LABEL[filters.issue] || filters.issue}</Badge>
+            <Button size="sm" variant="ghost" onClick={() => setFilters((f) => ({ ...f, issue: "" }))}>Clear ✕</Button>
+          </div>
+        )}
         <div className="grid md:grid-cols-4 gap-3">
           <div className="relative">
             <Search className="absolute top-2.5 left-3 h-4 w-4 text-muted-foreground" />

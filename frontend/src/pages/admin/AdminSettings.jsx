@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
+import GSheetBackupCard from "@/components/admin/GSheetBackupCard";
 import { KeyRound, FlaskConical, RotateCcw, Save, CheckCircle2, XCircle, Loader2 } from "lucide-react";
 
 const PROVIDER_LABELS = {
@@ -144,6 +145,7 @@ export default function AdminSettings() {
           Save ke baad key sirf masked dikhti hai. Galti ho to "Reset to env default" se wapas ja sakte hain.
         </p>
       </Card>
+      <GSheetBackupCard />
     </div>
   );
 }
