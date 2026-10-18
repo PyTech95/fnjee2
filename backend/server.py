@@ -346,8 +346,10 @@ async def purge_all_users(payload: dict, user: dict = Depends(require_role('admi
 
 
 def _question_filter(user: dict, subject=None, chapter=None, topic=None, difficulty=None, q_type=None,
-                     status_f=None, exam=None, student_class=None, year=None, series=None, search=None) -> dict:
+                     status_f=None, exam=None, student_class=None, year=None, series=None, search=None,
+                     tag=None) -> dict:
     q: dict = {}
+    if tag: q["tags"] = tag
     if subject: q["subject"] = subject
     if chapter: q["chapter"] = chapter
     if topic: q["topic"] = topic
@@ -397,12 +399,20 @@ async def list_questions_page(
     q_type: Optional[str] = None, status_f: Optional[str] = None,
     exam: Optional[str] = None, student_class: Optional[str] = None,
     year: Optional[str] = None, series: Optional[str] = None,
-    search: Optional[str] = None, page: int = 1, page_size: int = 50,
+    search: Optional[str] = None, page: int = 1, page_size: int = 50, tag: Optional[str] = None,
+    issue: Optional[str] = None,
     user: dict = Depends(require_role('admin', 'teacher')),
 ):
-    """One page of the question bank + the total, so big banks (30k+) never load at once."""
+    """One page of the question bank + the total, so big banks (30k+) never load at once.
+    issue: no-answer | picture-missing | ai-unsure | options-missing | ai-answered (AI answer waiting for review)"""
     q = _question_filter(user, subject, chapter, topic, difficulty, q_type, status_f, exam, student_class,
-                         year, series, search)
+                         year, series, search, tag)
+    if issue == "no-answer":
+        q.update(_MISSING_ANS)
+    elif issue in ("picture-missing", "ai-unsure", "options-missing"):
+        q["tags"] = issue
+    elif issue == "ai-answered":
+        q["answer_origin"] = "ai_generated"; q["status"] = "review"
     page_size = max(10, min(int(page_size or 50), 200))
     page = max(1, int(page or 1))
     total = await db.questions.count_documents(q)
@@ -3842,6 +3852,124 @@ async def test_ai_settings(user: dict = Depends(require_role('admin'))):
     except Exception as e:
         log.warning(f"AI key test failed: {e}")
         raise HTTPException(502, f"Key test failed: {str(e)[:300]}")
+
+
+# ---------- Google Sheet backup (website → Sheet, on button press) ----------
+import json
+class GSheetSettingsIn(BaseModel):
+    sheet_link: str
+    service_account_json: Optional[str] = None   # omit to keep the saved one
+
+
+def _gsheet_public(cfg: Optional[dict], status: Optional[dict]) -> dict:
+    import gsheet_backup
+    sa_email = None
+    if cfg and cfg.get("sa"):
+        try: sa_email = json.loads(cfg["sa"]).get("client_email")
+        except Exception: sa_email = None
+    st = {k: v for k, v in (status or {}).items() if k not in ("_id", "id")}
+    if st.get("state") == "running" and not gsheet_backup.is_running():
+        st["state"] = "error"; st["error"] = st.get("error") or "Backup beech mein ruk gaya (server restart). Dobara chalaiye."
+    return {"configured": bool(cfg and cfg.get("sa") and cfg.get("sheet_id")),
+            "sheet_id": (cfg or {}).get("sheet_id"),
+            "sheet_url": f"https://docs.google.com/spreadsheets/d/{cfg['sheet_id']}/edit" if cfg and cfg.get("sheet_id") else None,
+            "sheet_title": (cfg or {}).get("sheet_title"),
+            "service_account_email": sa_email, "status": st or None}
+
+
+@api.get("/admin/settings/gsheet")
+async def get_gsheet_settings(user: dict = Depends(require_role('admin'))):
+    cfg = await db.settings.find_one({"id": "gsheet"}, {"_id": 0})
+    st = await db.settings.find_one({"id": "gsheet_status"}, {"_id": 0})
+    return _gsheet_public(cfg, st)
+
+
+@api.put("/admin/settings/gsheet")
+async def save_gsheet_settings(inp: GSheetSettingsIn, user: dict = Depends(require_role('admin'))):
+    import gsheet_backup
+    sheet_id = gsheet_backup.sheet_id_from(inp.sheet_link)
+    if not sheet_id:
+        raise HTTPException(400, "Google Sheet ka link sahi nahi hai (docs.google.com/spreadsheets/d/... wala link daaliye)")
+    old = await db.settings.find_one({"id": "gsheet"}, {"_id": 0}) or {}
+    sa_raw = (inp.service_account_json or "").strip() or old.get("sa")
+    if not sa_raw:
+        raise HTTPException(400, "Service account ki JSON key paste kijiye")
+    try:
+        sa = json.loads(sa_raw)
+        assert sa.get("type") == "service_account" and sa.get("client_email") and sa.get("private_key")
+    except Exception:
+        raise HTTPException(400, "Ye service account JSON key nahi lag rahi (Google Cloud → Service account → Keys → JSON)")
+    try:
+        title = await asyncio.to_thread(gsheet_backup.check_access, sa, sheet_id)
+    except Exception as e:
+        raise HTTPException(400, f"Sheet nahi khul payi. Sheet ko {sa['client_email']} ke saath Editor share kijiye "
+                                 f"aur Google Sheets API enable kijiye. ({str(e)[:200]})")
+    await db.settings.update_one({"id": "gsheet"}, {"$set": {
+        "id": "gsheet", "sa": json.dumps(sa), "sheet_id": sheet_id, "sheet_title": title,
+        "updated_at": now_iso(), "updated_by": user["id"]}}, upsert=True)
+    log.info(f"Google Sheet backup configured by {user['email']} sheet={sheet_id}")
+    st = await db.settings.find_one({"id": "gsheet_status"}, {"_id": 0})
+    return _gsheet_public(await db.settings.find_one({"id": "gsheet"}, {"_id": 0}), st)
+
+
+@api.post("/admin/settings/gsheet/backup")
+async def start_gsheet_backup(user: dict = Depends(require_role('admin'))):
+    import gsheet_backup
+    cfg = await db.settings.find_one({"id": "gsheet"}, {"_id": 0})
+    if not (cfg and cfg.get("sa") and cfg.get("sheet_id")):
+        raise HTTPException(400, "Pehle Google Sheet backup settings save kijiye")
+    if gsheet_backup.is_running():
+        raise HTTPException(409, "Backup pehle se chal raha hai")
+    asyncio.create_task(gsheet_backup.run_backup(db, json.loads(cfg["sa"]), cfg["sheet_id"], user["email"]))
+    await asyncio.sleep(0.3)
+    st = await db.settings.find_one({"id": "gsheet_status"}, {"_id": 0})
+    return _gsheet_public(cfg, st)
+
+
+# ---------- AI Fix: answers for the whole bank + missing-picture check ----------
+_MISSING_ANS = {"$or": [
+    {"type": {"$ne": "subjective"}, "$or": [{"correct": {"$exists": False}}, {"correct": {"$size": 0}}]},
+    {"type": "subjective", "$or": [{"explanation": {"$exists": False}}, {"explanation": ""}]}]}
+
+
+@api.get("/admin/ai-fix")
+async def ai_fix_status(user: dict = Depends(require_role('admin'))):
+    import bank_ai_fix
+    base = {"personal": {"$ne": True}, "status": {"$ne": "archived"}}
+    st = await db.settings.find_one({"id": bank_ai_fix.STATUS_ID}, {"_id": 0}) or None
+    if st and st.get("state") == "running" and not bank_ai_fix.is_running():
+        st["state"] = "stopped"; st["last_error"] = st.get("last_error") or "Server restart ki wajah se ruk gaya. Dobara chalaiye — jahan ruka tha wahin se aage chalega."
+    return {
+        "total": await db.questions.count_documents(base),
+        "missing_answers": await db.questions.count_documents({**base, **_MISSING_ANS}),
+        "picture_missing": await db.questions.count_documents({**base, "tags": "picture-missing"}),
+        "ai_unsure": await db.questions.count_documents({**base, "tags": "ai-unsure"}),
+        "ai_answered_review": await db.questions.count_documents({**base, "answer_origin": "ai_generated", "status": "review"}),
+        "running": bank_ai_fix.is_running(), "status": st}
+
+
+@api.post("/admin/ai-fix/start")
+async def ai_fix_start(payload: dict, user: dict = Depends(require_role('admin'))):
+    import bank_ai_fix
+    if bank_ai_fix.is_running():
+        raise HTTPException(409, "AI Fix pehle se chal raha hai")
+    if not ai_full()["key"]:
+        raise HTTPException(400, "AI key set nahi hai (Admin → AI Settings)")
+    subject = (payload.get("subject") or "").strip() or None
+    task = asyncio.create_task(bank_ai_fix.run(db, user["email"], subject=subject,
+                                               approve=bool(payload.get("approve")),
+                                               retry_unsure=bool(payload.get("retry_unsure")),
+                                               limit=payload.get("limit")))
+    _bg_tasks.add(task); task.add_done_callback(_bg_tasks.discard)
+    await asyncio.sleep(0.3)
+    return await ai_fix_status(user)
+
+
+@api.post("/admin/ai-fix/stop")
+async def ai_fix_stop(user: dict = Depends(require_role('admin'))):
+    import bank_ai_fix
+    bank_ai_fix.request_stop()
+    return {"ok": True}
 
 
 app.include_router(api)
