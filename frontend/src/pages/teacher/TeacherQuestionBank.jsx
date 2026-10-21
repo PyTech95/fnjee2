@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
-import { questionsApi, testsApi } from "@/lib/api";
+import { useMemo, useState } from "react";
+import { testsApi } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { Search, Printer, FilePlus2, X, ArrowUp, ArrowDown } from "lucide-react";
+import { Printer, FilePlus2, X, ArrowUp, ArrowDown } from "lucide-react";
+import NumberedPager from "@/components/bank/NumberedPager";
+import BankFilters from "@/components/bank/BankFilters";
+import { EMPTY_FILTERS, useQuestionPage, useTaxonomy, classLabel } from "@/lib/bank";
 import { toast } from "sonner";
 import MathText from "@/components/MathText";
 import { QuestionContent } from "@/components/QuestionContent";
@@ -15,21 +17,14 @@ import { printPaper } from "@/lib/printPaper";
 const DIFF_COLOR = { easy: "bg-emerald-500/10 text-emerald-600 border-emerald-500/20", medium: "bg-amber-500/10 text-amber-600 border-amber-500/20", hard: "bg-red-500/10 text-red-600 border-red-500/20" };
 
 export default function TeacherQuestionBank() {
-  const [rows, setRows] = useState([]);
-  const [filters, setFilters] = useState({ subject: "", difficulty: "", search: "" });
-  const [loading, setLoading] = useState(false);
+  const [filters, setFilters] = useState({ ...EMPTY_FILTERS });
+  const { tax } = useTaxonomy();
+  const pg = useQuestionPage(filters, 30);
+  const { rows, loading } = pg;
   const [selected, setSelected] = useState([]); // array of question objects (ordered)
   const [title, setTitle] = useState("");
   const [duration, setDuration] = useState(60);
   const [saving, setSaving] = useState(false);
-
-  const load = () => {
-    setLoading(true);
-    const params = { limit: 500 };
-    Object.entries(filters).forEach(([k, v]) => { if (v && v !== "all") params[k] = v; });
-    questionsApi.list(params).then(setRows).finally(() => setLoading(false));
-  };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [filters]);
 
   const selectedIds = useMemo(() => new Set(selected.map((q) => q.id)), [selected]);
 
@@ -78,33 +73,10 @@ export default function TeacherQuestionBank() {
         {/* left: bank */}
         <div className="lg:col-span-2 space-y-4">
           <Card className="en-card p-4">
-            <div className="grid md:grid-cols-3 gap-3">
-              <div className="relative">
-                <Search className="absolute top-2.5 left-3 h-4 w-4 text-muted-foreground" />
-                <Input data-testid="tq-search" placeholder="Search text…" className="pl-9" value={filters.search}
-                  onChange={(e) => setFilters({ ...filters, search: e.target.value })} />
-              </div>
-              <Select value={filters.subject || "all"} onValueChange={(v) => setFilters({ ...filters, subject: v === "all" ? "" : v })}>
-                <SelectTrigger data-testid="tq-filter-subject"><SelectValue placeholder="Subject" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All subjects</SelectItem>
-                  <SelectItem value="Physics">Physics</SelectItem>
-                  <SelectItem value="Chemistry">Chemistry</SelectItem>
-                  <SelectItem value="Mathematics">Mathematics</SelectItem>
-                  <SelectItem value="Biology">Biology</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={filters.difficulty || "all"} onValueChange={(v) => setFilters({ ...filters, difficulty: v === "all" ? "" : v })}>
-                <SelectTrigger><SelectValue placeholder="Difficulty" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All levels</SelectItem>
-                  <SelectItem value="easy">Easy</SelectItem>
-                  <SelectItem value="medium">Medium</SelectItem>
-                  <SelectItem value="hard">Hard</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            <BankFilters filters={filters} setFilters={setFilters} tax={tax} show={["difficulty", "type"]} testId="tq-filters" />
           </Card>
+          <NumberedPager testId="tq-pager" page={pg.page} pages={pg.pages} total={pg.total} pageSize={pg.pageSize}
+            onPage={(p) => { pg.setPage(p); window.scrollTo({ top: 0, behavior: "smooth" }); }} onPageSize={pg.setPageSize} loading={loading} />
 
           <div className="space-y-3">
             {loading && <div className="text-center text-muted-foreground py-8">Loading…</div>}
@@ -122,7 +94,9 @@ export default function TeacherQuestionBank() {
                     </details>
                     <div className="flex flex-wrap gap-2 mt-2">
                       <Badge variant="secondary" className="rounded-full">{q.subject}</Badge>
+                      {q.student_class && <Badge variant="outline" className="rounded-full">{classLabel(q.student_class)}</Badge>}
                       {q.chapter && <Badge variant="outline" className="rounded-full">{q.chapter}</Badge>}
+                      {q.topic && <Badge variant="outline" className="rounded-full">{q.topic}</Badge>}
                       <Badge className={`rounded-full border ${DIFF_COLOR[q.difficulty] || ""}`} variant="outline">{q.difficulty}</Badge>
                       <Badge variant="outline" className="rounded-full">{q.marks} marks</Badge>
                     </div>
@@ -131,6 +105,10 @@ export default function TeacherQuestionBank() {
               </Card>
             ))}
           </div>
+          {pg.total > pg.pageSize && (
+            <NumberedPager testId="tq-pager-bottom" page={pg.page} pages={pg.pages} total={pg.total} pageSize={pg.pageSize}
+              onPage={(p) => { pg.setPage(p); window.scrollTo({ top: 0, behavior: "smooth" }); }} loading={loading} />
+          )}
         </div>
 
         {/* right: selection cart */}

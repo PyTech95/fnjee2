@@ -25,6 +25,8 @@ from media_store import externalize_question, media_path
 from ai_key import resolve as resolve_ai, resolve_full as ai_full, load_from_db as load_ai_cfg, status as ai_status, PROVIDERS as AI_PROVIDERS
 from ai_chat import ai_complete, OWN_DEFAULT_MODEL
 from answer_generator import generate_missing_answers
+import taxonomy
+from auto_tagger import tag_questions, needs_tags
 
 MONGO_URL = os.environ['MONGO_URL']
 DB_NAME = os.environ['DB_NAME']
@@ -345,20 +347,32 @@ async def purge_all_users(payload: dict, user: dict = Depends(require_role('admi
             "deleted_attempts": (da.deleted_count if da else 0)}
 
 
+NOT_SET = "__none__"          # filter value meaning "field is empty / missing"
+_EMPTY = {"$in": [None, ""]}
+
+
+def _tag_cond(value):
+    return _EMPTY if value == NOT_SET else value
+
+
 def _question_filter(user: dict, subject=None, chapter=None, topic=None, difficulty=None, q_type=None,
-                     status_f=None, exam=None, student_class=None, year=None, series=None, search=None) -> dict:
+                     status_f=None, exam=None, student_class=None, year=None, series=None, search=None,
+                     untagged: bool = False) -> dict:
     q: dict = {}
     if subject: q["subject"] = subject
-    if chapter: q["chapter"] = chapter
-    if topic: q["topic"] = topic
+    if chapter: q["chapter"] = _tag_cond(chapter)
+    if topic: q["topic"] = _tag_cond(topic)
     if difficulty: q["difficulty"] = difficulty
     if q_type: q["type"] = q_type
     if status_f: q["status"] = status_f
     if exam: q["exam"] = exam
-    if student_class: q["student_class"] = student_class
+    if student_class: q["student_class"] = _tag_cond(student_class)
     if year: q["year"] = year
     if series: q["series"] = series
     if search: q["text"] = {"$regex": re.escape(search), "$options": "i"}
+    if untagged:
+        # missing any of class / chapter / topic → not reachable from the subject→chapter→topic view
+        q["$or"] = [{"student_class": _EMPTY}, {"chapter": _EMPTY}, {"topic": _EMPTY}]
     q["personal"] = {"$ne": True}
     # Teachers only see questions within their granted subjects (empty = unrestricted).
     # Exam/class are metadata that legacy questions may lack, so they are not hard-filtered here.
@@ -380,13 +394,14 @@ async def list_questions(
     q_type: Optional[str] = None, status_f: Optional[str] = None,
     exam: Optional[str] = None, student_class: Optional[str] = None,
     year: Optional[str] = None, series: Optional[str] = None,
-    search: Optional[str] = None, limit: int = 200, skip: int = 0,
+    search: Optional[str] = None, limit: int = 200, skip: int = 0, untagged: bool = False,
     user: dict = Depends(require_role('admin', 'teacher')),
 ):
     q = _question_filter(user, subject, chapter, topic, difficulty, q_type, status_f, exam, student_class,
-                         year, series, search)
+                         year, series, search, untagged)
     limit = max(1, min(int(limit or 200), 2000))
-    docs = await db.questions.find(q, {"_id": 0}).sort("created_at", -1).skip(max(0, int(skip or 0))).to_list(limit)
+    docs = await db.questions.find(q, {"_id": 0}).sort("created_at", -1).skip(max(0, int(skip or 0))) \
+        .limit(limit).to_list(limit)
     return docs
 
 
@@ -397,17 +412,17 @@ async def list_questions_page(
     q_type: Optional[str] = None, status_f: Optional[str] = None,
     exam: Optional[str] = None, student_class: Optional[str] = None,
     year: Optional[str] = None, series: Optional[str] = None,
-    search: Optional[str] = None, page: int = 1, page_size: int = 50,
+    search: Optional[str] = None, page: int = 1, page_size: int = 50, untagged: bool = False,
     user: dict = Depends(require_role('admin', 'teacher')),
 ):
     """One page of the question bank + the total, so big banks (30k+) never load at once."""
     q = _question_filter(user, subject, chapter, topic, difficulty, q_type, status_f, exam, student_class,
-                         year, series, search)
+                         year, series, search, untagged)
     page_size = max(10, min(int(page_size or 50), 200))
     page = max(1, int(page or 1))
     total = await db.questions.count_documents(q)
-    items = await db.questions.find(q, {"_id": 0}).sort("created_at", -1) \
-        .skip((page - 1) * page_size).to_list(page_size)
+    items = await db.questions.find(q, {"_id": 0}).sort([("created_at", -1), ("id", 1)]) \
+        .skip((page - 1) * page_size).limit(page_size).to_list(page_size)
     return {"items": items, "total": total, "page": page, "page_size": page_size,
             "pages": max(1, (total + page_size - 1) // page_size)}
 
@@ -418,10 +433,207 @@ async def question_chapters(subject: Optional[str] = None, user: dict = Depends(
     return sorted(c for c in await db.questions.distinct("chapter", q) if c)
 
 
+def _sorted_classes(names):
+    order = {"11": 0, "12": 1, "Dropper": 2, "": 99}
+    return sorted(names, key=lambda n: (order.get(n, 50), n))
+
+
+@api.get("/questions/taxonomy")
+async def question_taxonomy(status_f: Optional[str] = None,
+                            user: dict = Depends(require_role('admin', 'teacher'))):
+    """Subject → Class → Chapter → Topic tree with question counts (and approved counts).
+    Empty labels come back as "" so the UI can show them as "Not set"."""
+    base = _question_filter(user, status_f=status_f)
+    pipeline = [
+        {"$match": base},
+        {"$group": {"_id": {"s": "$subject", "c": "$student_class", "ch": "$chapter", "t": "$topic"},
+                    "n": {"$sum": 1},
+                    "ok": {"$sum": {"$cond": [{"$eq": ["$status", "approved"]}, 1, 0]}}}},
+    ]
+    rows = await db.questions.aggregate(pipeline).to_list(100000)
+    tree: dict = {}
+    for r in rows:
+        k = r["_id"] or {}
+        s, c, ch, t = (str(k.get(x) or "") for x in ("s", "c", "ch", "t"))
+        n, ok = int(r.get("n", 0)), int(r.get("ok", 0))
+        sn = tree.setdefault(s, {"count": 0, "approved": 0, "classes": {}})
+        cn = sn["classes"].setdefault(c, {"count": 0, "approved": 0, "chapters": {}})
+        chn = cn["chapters"].setdefault(ch, {"count": 0, "approved": 0, "topics": {}})
+        tn = chn["topics"].setdefault(t, {"count": 0, "approved": 0})
+        for node in (sn, cn, chn, tn):
+            node["count"] += n; node["approved"] += ok
+
+    subj_order = {s: i for i, s in enumerate(taxonomy.SUBJECTS)}
+    out = []
+    for s in sorted(tree, key=lambda x: (subj_order.get(x, 50), x == "", x)):
+        sn = tree[s]
+        classes = []
+        for c in _sorted_classes(sn["classes"]):
+            cn = sn["classes"][c]
+            chapters = []
+            for ch in sorted(cn["chapters"], key=lambda x: (x == "",) + taxonomy.chapter_order(s, c, x)):
+                chn = cn["chapters"][ch]
+                topics = [{"name": t, **chn["topics"][t]}
+                          for t in sorted(chn["topics"], key=lambda x: (x == "", x.lower()))]
+                chapters.append({"name": ch, "count": chn["count"], "approved": chn["approved"], "topics": topics})
+            classes.append({"name": c, "count": cn["count"], "approved": cn["approved"], "chapters": chapters})
+        out.append({"name": s, "count": sn["count"], "approved": sn["approved"], "classes": classes})
+
+    status_rows = await db.questions.aggregate([
+        {"$match": base}, {"$group": {"_id": "$status", "n": {"$sum": 1}}}]).to_list(20)
+    status_counts = {str(r["_id"] or "approved"): int(r["n"]) for r in status_rows}
+    untagged = await db.questions.count_documents(_question_filter(user, status_f=status_f, untagged=True))
+    return {"total": sum(x["count"] for x in out), "approved": sum(x["approved"] for x in out),
+            "untagged": untagged, "status": status_counts, "subjects": out,
+            "syllabus": taxonomy.SYLLABUS}
+
+
+async def _normalize_bank(query: dict, dry_run: bool) -> dict:
+    """Clean subject/class/chapter/topic labels of every question matching ``query``."""
+    from pymongo import UpdateOne
+    proj = {"_id": 0, "id": 1, "subject": 1, "student_class": 1, "chapter": 1, "topic": 1}
+    stats = {"checked": 0, "changed": 0, "subject_fixed": 0, "class_filled": 0,
+             "chapter_renamed": 0, "topic_filled": 0}
+    examples: List[dict] = []
+    ops: List = []
+
+    async def _flush():
+        if not ops or dry_run:
+            ops.clear(); return
+        try:
+            await db.questions.bulk_write([UpdateOne(f, u) for f, u in ops], ordered=False)
+        except Exception:
+            for f, u in ops:   # mongomock / old servers: one by one
+                await db.questions.update_one(f, u)
+        ops.clear()
+
+    pairs = []
+    async for d in db.questions.find(query, proj):
+        new = taxonomy.normalize_tags(d)
+        if not new.get("subject"):
+            new["subject"] = d.get("subject") or ""
+        pairs.append((d, new))
+
+    # Same label typed differently ("Kinematics" / "kinematics", "Mole concept" / "Mole Concept")
+    # → one spelling: the most used one (ties: the nicer Title-Case one).
+    from collections import Counter
+    ch_votes: dict = {}
+    tp_votes: dict = {}
+    for _, n in pairs:
+        if n["chapter"]:
+            ch_votes.setdefault((n["subject"], taxonomy.label_key(n["chapter"])), Counter())[n["chapter"]] += 1
+        if n["topic"]:
+            tp_votes.setdefault((n["subject"], taxonomy.label_key(n["chapter"]), taxonomy.label_key(n["topic"])),
+                                Counter())[n["topic"]] += 1
+
+    def _winner(counter):
+        return max(counter.items(), key=lambda kv: (kv[1], kv[0] == taxonomy.smart_title(kv[0]), kv[0]))[0]
+    ch_best = {k: _winner(c) for k, c in ch_votes.items()}
+    tp_best = {k: _winner(c) for k, c in tp_votes.items()}
+
+    for d, new in pairs:
+        stats["checked"] += 1
+        if new["chapter"]:
+            new["chapter"] = ch_best.get((new["subject"], taxonomy.label_key(new["chapter"])), new["chapter"])
+        if new["topic"]:
+            new["topic"] = tp_best.get((new["subject"], taxonomy.label_key(new["chapter"]),
+                                        taxonomy.label_key(new["topic"])), new["topic"])
+        changes = {k: v for k, v in new.items() if (d.get(k) or "") != (v or "")}
+        if not changes:
+            continue
+        stats["changed"] += 1
+        if "subject" in changes: stats["subject_fixed"] += 1
+        if "student_class" in changes and not d.get("student_class"): stats["class_filled"] += 1
+        if "chapter" in changes and d.get("chapter"): stats["chapter_renamed"] += 1
+        if "topic" in changes and not d.get("topic"): stats["topic_filled"] += 1
+        if len(examples) < 12:
+            examples.append({"id": d.get("id"),
+                             "before": {k: d.get(k) or "" for k in changes},
+                             "after": changes})
+        ops.append(({"id": d["id"]}, {"$set": {**changes, "updated_at": now_iso()}}))
+        if len(ops) >= 500:
+            await _flush()
+    await _flush()
+    return {**stats, "examples": examples, "dry_run": dry_run}
+
+
+@api.post("/questions/normalize-taxonomy")
+async def normalize_taxonomy(payload: dict = None, user: dict = Depends(require_role('admin'))):
+    """One click: fix label spellings across the bank so filters and the tree match.
+    'chem' → Chemistry, 'XI'/'11th' → 11, 'Mole concept ' → chapter 'Some Basic Concepts of Chemistry'
+    + topic 'Mole Concept', class filled from the chapter, subject fixed when the chapter clearly
+    belongs to another subject. Body: {dry_run?: bool}."""
+    payload = payload or {}
+    return await _normalize_bank({"personal": {"$ne": True}}, bool(payload.get("dry_run")))
+
+
+async def _run_tag_job(job_id: str, docs: List[dict], fix_subject: bool):
+    async def _progress(pct, msg):
+        await db.import_jobs.update_one({"id": job_id}, {"$set": {"progress": {"pct": int(pct), "msg": msg}}})
+
+    async def _save(qid, upd):
+        upd = dict(upd); upd["updated_at"] = now_iso()
+        await db.questions.update_one({"id": qid}, {"$set": upd})
+    try:
+        result = await tag_questions(docs, fix_subject=fix_subject, progress_cb=_progress, save_cb=_save)
+        await db.import_jobs.update_one({"id": job_id}, {"$set": {
+            "status": "done", "result": result, "progress": {"pct": 100, "msg": "Done"},
+            "finished_at": now_iso()}})
+    except Exception as exc:
+        log.exception("AI tag job failed")
+        await db.import_jobs.update_one({"id": job_id}, {"$set": {
+            "status": "error", "error": str(exc)[:300], "finished_at": now_iso()}})
+
+
+@api.post("/questions/auto-tag/start")
+async def auto_tag_start(payload: dict, user: dict = Depends(require_role('admin'))):
+    """AI fills Class / Chapter / Topic (and fixes a wrong Subject) for questions that are missing them.
+    Body: {ids?: [...] (selected questions), fix_subject?: bool = true}. Without ids, every
+    question missing class, chapter or topic is processed. Poll /import/jobs/{job_id}."""
+    if not (ai_full() or {}).get("key"):
+        raise HTTPException(400, "AI is not set up yet. Open Admin → AI Settings and paste your AI key "
+                                 "(Gemini key from aistudio.google.com/apikey starts with 'AIza').")
+    ids = [i for i in (payload.get("ids") or []) if isinstance(i, str)]
+    fix_subject = payload.get("fix_subject", True) is not False
+    query = {"personal": {"$ne": True}}
+    if ids:
+        query["id"] = {"$in": ids}
+    else:
+        query["$or"] = [{"student_class": _EMPTY}, {"chapter": _EMPTY}, {"topic": _EMPTY}]
+    # first the free, rule-based clean-up — fewer questions left for the AI
+    await _normalize_bank(dict(query), dry_run=False)
+    proj = {"_id": 0, "id": 1, "subject": 1, "student_class": 1, "chapter": 1, "topic": 1,
+            "text": 1, "options": 1}
+    docs = await db.questions.find(query, proj).to_list(5000)
+    if not ids:
+        docs = [d for d in docs if needs_tags(d)]
+    if not docs:
+        return {"job_id": None, "count": 0, "status": "done",
+                "message": "Every question already has class, chapter and topic."}
+    job_id = new_id()
+    await db.import_jobs.insert_one({
+        "id": job_id, "status": "processing", "filename": "AI auto-tag", "created_by": user["id"],
+        "created_at": now_iso(), "result": None, "error": None,
+        "progress": {"pct": 2, "msg": f"Queued {len(docs)} questions…"}})
+    task = asyncio.create_task(_run_tag_job(job_id, docs, fix_subject))
+    _bg_tasks.add(task); task.add_done_callback(_bg_tasks.discard)
+    return {"job_id": job_id, "count": len(docs), "status": "processing"}
+
+
+def _with_clean_tags(doc: dict, fix_subject: bool = False) -> dict:
+    """Same spelling for the same subject/class/chapter everywhere (see taxonomy.normalize_tags)."""
+    tags = taxonomy.normalize_tags(doc, fix_subject=fix_subject)
+    for k in ("student_class", "chapter", "topic"):
+        doc[k] = tags.get(k) or ""
+    if tags.get("subject"):
+        doc["subject"] = tags["subject"]
+    return doc
+
+
 @api.post("/questions")
 async def create_question(inp: QuestionIn, user: dict = Depends(require_role('admin'))):
     dup = await db.questions.find_one({"text": inp.text}, {"_id": 0, "id": 1})
-    doc = externalize_question(inp.model_dump())
+    doc = externalize_question(_with_clean_tags(inp.model_dump()))
     doc.update({"id": new_id(), "created_at": now_iso(), "created_by": user["id"],
                 "duplicate_of": dup["id"] if dup else None})
     await db.questions.insert_one(doc)
@@ -429,7 +641,7 @@ async def create_question(inp: QuestionIn, user: dict = Depends(require_role('ad
 
 @api.put("/questions/{qid}")
 async def update_question(qid: str, inp: QuestionIn, user: dict = Depends(require_role('admin'))):
-    upd = externalize_question(inp.model_dump()); upd["updated_at"] = now_iso()
+    upd = externalize_question(_with_clean_tags(inp.model_dump())); upd["updated_at"] = now_iso()
     r = await db.questions.update_one({"id": qid}, {"$set": upd})
     if r.matched_count == 0: raise HTTPException(404, "Not found")
     return await db.questions.find_one({"id": qid}, {"_id": 0})
@@ -463,23 +675,39 @@ async def bulk_update_questions(payload: dict, user: dict = Depends(require_role
     ids = payload.get("ids") or []
     patch = payload.get("patch") or {}
     add_tags = [t for t in (payload.get("add_tags") or []) if str(t).strip()]
-    if not ids:
+    flt = payload.get("filter")
+    if ids:
+        target = {"id": {"$in": ids}}
+    elif isinstance(flt, dict):
+        # "select all N matching" — same filter params as GET /questions/page
+        keys = ("subject", "chapter", "topic", "difficulty", "q_type", "status_f", "exam",
+                "student_class", "year", "series", "search")
+        target = _question_filter(user, **{k: (flt.get(k) or None) for k in keys},
+                                  untagged=bool(flt.get("untagged")))
+    else:
         raise HTTPException(400, "Select at least one question")
     allowed = {"chapter", "topic", "section", "difficulty", "status", "subject",
                "marks", "negative_marks", "exam", "student_class", "year", "type", "language"}
     upd = {k: v for k, v in patch.items() if k in allowed and v not in (None, "")}
+    for k in ("chapter", "topic", "exam"):
+        if isinstance(upd.get(k), str): upd[k] = taxonomy.clean_label(upd[k])
+    if "student_class" in upd: upd["student_class"] = taxonomy.normalize_class(upd["student_class"])
+    if "subject" in upd:
+        from question_sheet import normalize_subject
+        upd["subject"] = normalize_subject(upd["subject"], default=upd["subject"])
+    upd = {k: v for k, v in upd.items() if v not in (None, "")}
     if not upd and not add_tags:
         raise HTTPException(400, "Nothing to change")
     modified = 0
+    requested = len(ids) if ids else await db.questions.count_documents(target)
     if upd:
         upd["updated_at"] = now_iso()
-        r = await db.questions.update_many({"id": {"$in": ids}}, {"$set": upd})
+        r = await db.questions.update_many(target, {"$set": upd})
         modified = r.modified_count
     if add_tags:
-        r2 = await db.questions.update_many(
-            {"id": {"$in": ids}}, {"$addToSet": {"tags": {"$each": add_tags}}})
+        r2 = await db.questions.update_many(target, {"$addToSet": {"tags": {"$each": add_tags}}})
         modified = max(modified, r2.modified_count)
-    return {"ok": True, "modified": modified, "requested": len(ids)}
+    return {"ok": True, "modified": modified, "requested": requested}
 
 
 @api.post("/questions/bulk-delete")
@@ -1069,6 +1297,8 @@ async def _commit_questions(questions: List[dict], user: dict, subject_default: 
                     except Exception: q[k] = 4.0 if k == "marks" else 1.0
             # default subject if AI left it blank
             if not q.get("subject"): q["subject"] = subject_default or "Physics"
+            # one spelling per subject / class / chapter so the bank's filters & tree find it
+            _with_clean_tags(q, fix_subject=True)
             # sanity: text must exist
             if not (q.get("text") or "").strip():
                 skipped.append({"index": idx, "reason": "empty question text"}); continue
@@ -1219,12 +1449,16 @@ async def random_test_builder(payload: dict, user: dict = Depends(get_current_us
     q: dict = {"status": "approved"}
     if payload.get("subjects"): q["subject"] = {"$in": payload["subjects"]}
     if payload.get("chapters"): q["chapter"] = {"$in": payload["chapters"]}
+    if payload.get("topics"): q["topic"] = {"$in": payload["topics"]}
+    if payload.get("classes"): q["student_class"] = {"$in": payload["classes"]}
     if payload.get("difficulty"): q["difficulty"] = payload["difficulty"]
-    n = int(payload.get("count", 10))
-    docs = await db.questions.find(q, {"_id": 0}).to_list(1000)
+    q["personal"] = {"$ne": True}
+    n = max(1, min(int(payload.get("count", 10) or 10), 500))
+    docs = await db.questions.aggregate([{"$match": q}, {"$sample": {"size": n}}, {"$project": {"_id": 0}}]).to_list(n)
     random.shuffle(docs)
     picked = docs[:n]
-    return {"question_ids": [d["id"] for d in picked], "questions": picked}
+    available = await db.questions.count_documents(q)
+    return {"question_ids": [d["id"] for d in picked], "questions": picked, "available": available}
 
 
 @api.post("/tests/assign")
@@ -3896,6 +4130,10 @@ async def _startup():
         await db.questions.create_index("text")  # fast duplicate checks on bulk imports
         await db.questions.create_index([("created_at", -1)])
         await db.questions.create_index([("subject", 1), ("created_at", -1)])
+        # question bank paging (stable order) + subject → class → chapter → topic filters
+        await db.questions.create_index("id")
+        await db.questions.create_index([("created_at", -1), ("id", 1)])
+        await db.questions.create_index([("subject", 1), ("student_class", 1), ("chapter", 1), ("topic", 1)])
         await db.import_job_chunks.create_index("job_id")
         await db.import_job_chunks.create_index("expire_at", expireAfterSeconds=0)
     except Exception:

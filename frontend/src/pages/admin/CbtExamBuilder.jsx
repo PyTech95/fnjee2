@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { questionsApi, testsApi } from "@/lib/api";
+import { testsApi } from "@/lib/api";
+import NumberedPager from "@/components/bank/NumberedPager";
+import BankFilters from "@/components/bank/BankFilters";
+import { EMPTY_FILTERS, useQuestionPage, useTaxonomy, classLabel } from "@/lib/bank";
 import { cbtApi } from "@/lib/cbtApi";
 import { BilingualQuestionModal } from "@/components/admin/BilingualQuestionModal";
 import { CbtQuestionView, toCbtQuestionShape } from "@/components/exam/CbtQuestionView";
@@ -11,7 +14,6 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Plus, Trash2, Eye, ArrowUp, ArrowDown, Save, Layers, FileQuestion } from "lucide-react";
@@ -28,18 +30,21 @@ export default function CbtExamBuilder() {
     instructions_en: "", instructions_hi: "",
   });
   const [subjects, setSubjects] = useState([emptySubject("Physics")]);
-  const [bank, setBank] = useState([]);
-  const [search, setSearch] = useState("");
-  const [filterSubject, setFilterSubject] = useState("all");
+  // bank panel: one server page at a time; `known` remembers every question seen (for the section lists)
+  const [filters, setFilters] = useState({ ...EMPTY_FILTERS });
+  const { tax } = useTaxonomy();
+  const pg = useQuestionPage(filters, 20);
+  const [known, setKnown] = useState({});
+  const remember = (qs) => setKnown((k) => { const n = { ...k }; (qs || []).forEach((q) => { n[q.id] = q; }); return n; });
   const [target, setTarget] = useState({ s: 0, sec: 0 });
   const [showNewQ, setShowNewQ] = useState(false);
   const [preview, setPreview] = useState(null); // raw question doc
   const [previewLang, setPreviewLang] = useState("en");
   const [busy, setBusy] = useState(false);
 
-  const qById = useMemo(() => Object.fromEntries(bank.map((q) => [q.id, q])), [bank]);
-
-  useEffect(() => { questionsApi.list({ limit: 1000 }).then(setBank).catch(() => toast.error("Could not load question bank")); }, []);
+  const qById = known;
+  useEffect(() => { remember(pg.rows); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [pg.rows]);
+  useEffect(() => { if (pg.error) toast.error("Could not load question bank"); }, [pg.error]);
 
   // ---- load existing exam for edit ----
   useEffect(() => {
@@ -48,6 +53,7 @@ export default function CbtExamBuilder() {
       try {
         const t = await testsApi.get(testId, true);
         const qs = t.questions || [];
+        remember(qs);
         setMeta({
           title: t.title || "", duration_minutes: t.duration_minutes || 60,
           negative_marking: t.negative_marking !== false,
@@ -111,10 +117,7 @@ export default function CbtExamBuilder() {
   const totalQuestions = subjects.reduce((a, s) => a + s.sections.reduce((b, sec) => b + sec.question_ids.length, 0), 0);
   const totalMarks = subjects.reduce((a, s) => a + s.sections.reduce((b, sec) => b + sec.question_ids.reduce((c, qid) => c + (qById[qid]?.marks || 4), 0), 0), 0);
 
-  const filteredBank = bank.filter((q) =>
-    (filterSubject === "all" || q.subject === filterSubject) &&
-    (!search || (q.text || "").toLowerCase().includes(search.toLowerCase()))
-  );
+  const filteredBank = pg.rows;
 
   const save = async () => {
     if (!meta.title.trim()) return toast.error("Exam title is required");
@@ -240,15 +243,12 @@ export default function CbtExamBuilder() {
               <h3 className="font-display font-semibold text-base flex items-center gap-2"><FileQuestion className="h-4 w-4" /> Question bank</h3>
               <Button type="button" size="sm" className="rounded-full" onClick={() => setShowNewQ(true)} data-testid="cbt-new-question"><Plus className="h-4 w-4 mr-1" />New</Button>
             </div>
-            <div className="flex gap-2 mb-3">
-              <Input placeholder="Search…" value={search} onChange={(e) => setSearch(e.target.value)} className="h-9" data-testid="cbt-bank-search" />
-              <Select value={filterSubject} onValueChange={setFilterSubject}>
-                <SelectTrigger className="w-32 h-9" data-testid="cbt-bank-subject"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  {ALL_SUBJECTS.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                </SelectContent>
-              </Select>
+            <div className="mb-3">
+              <BankFilters compact filters={filters} setFilters={setFilters} tax={tax} show={["difficulty", "type"]} testId="cbt-bank" />
+            </div>
+            <div className="mb-2">
+              <NumberedPager compact testId="cbt-bank-pager" page={pg.page} pages={pg.pages} total={pg.total} pageSize={pg.pageSize}
+                onPage={pg.setPage} loading={pg.loading} />
             </div>
             <div className="text-xs text-slate-500 mb-2">Adding to: <b>{subjects[target.s]?.name} · {subjects[target.s]?.sections[target.sec]?.name}</b></div>
             <div className="max-h-[52vh] overflow-y-auto en-scroll space-y-1.5">
@@ -256,8 +256,10 @@ export default function CbtExamBuilder() {
                 <div key={q.id} className="flex items-start gap-2 p-2 rounded border border-slate-200 hover:bg-muted/50">
                   <div className="flex-1 min-w-0">
                     <div className="text-xs line-clamp-2">{q.text}</div>
-                    <div className="flex gap-1 mt-1">
+                    <div className="flex flex-wrap gap-1 mt-1">
                       <Badge variant="secondary" className="rounded-full text-[10px]">{q.subject}</Badge>
+                      {q.student_class && <Badge variant="outline" className="rounded-full text-[10px]">{classLabel(q.student_class)}</Badge>}
+                      {q.chapter && <Badge variant="outline" className="rounded-full text-[10px] max-w-[150px] truncate">{q.chapter}</Badge>}
                       <Badge variant="outline" className="rounded-full text-[10px]">{q.type === "mcq_multi" ? "MSQ" : q.type === "integer" || q.type === "numerical" ? "NUM" : "SCM"}</Badge>
                     </div>
                   </div>
@@ -265,7 +267,7 @@ export default function CbtExamBuilder() {
                   <Button type="button" size="sm" variant="outline" onClick={() => addQToTarget(q.id)} data-testid={`bank-add-${q.id}`}><Plus className="h-4 w-4" /></Button>
                 </div>
               ))}
-              {filteredBank.length === 0 && <p className="text-xs text-slate-400 py-4 text-center">No questions match.</p>}
+              {!pg.loading && filteredBank.length === 0 && <p className="text-xs text-slate-400 py-4 text-center">No questions match.</p>}
             </div>
           </Card>
           <Card className="en-card p-5">
@@ -284,7 +286,7 @@ export default function CbtExamBuilder() {
         open={showNewQ}
         onOpenChange={setShowNewQ}
         defaultSubject={subjects[target.s]?.name}
-        onCreated={(created) => { setBank((b) => [created, ...b]); addQToTarget(created.id); }}
+        onCreated={(created) => { remember([created]); addQToTarget(created.id); pg.reload(); }}
       />
 
       {/* live preview modal — SAME renderer as student exam */}

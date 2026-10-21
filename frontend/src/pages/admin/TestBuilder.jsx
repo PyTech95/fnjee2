@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { questionsApi, testsApi } from "@/lib/api";
+import { useState } from "react";
+import { testsApi } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,6 +11,10 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { Wand2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import NumberedPager from "@/components/bank/NumberedPager";
+import BankFilters from "@/components/bank/BankFilters";
+import { EMPTY_FILTERS, NOT_SET, STATUS_STYLE, useQuestionPage, useTaxonomy, classLabel } from "@/lib/bank";
+import MathText from "@/components/MathText";
 
 export default function TestBuilder() {
   const [t, setT] = useState({
@@ -20,25 +24,37 @@ export default function TestBuilder() {
     proctor_cutoff: 0, proctor_action: "flag",
     question_ids: [], sections: [],
   });
-  const [bank, setBank] = useState([]);
-  const [difficulty, setDifficulty] = useState("");
+  const [filters, setFilters] = useState({ ...EMPTY_FILTERS });
+  const { tax } = useTaxonomy();
+  const pg = useQuestionPage(filters, 30);
   const [count, setCount] = useState(10);
   const nav = useNavigate();
-
-  useEffect(() => { questionsApi.list({ limit: 500 }).then(setBank); }, []);
 
   const upd = (k, v) => setT((x) => ({ ...x, [k]: v }));
   const toggleQ = (id) => upd("question_ids", t.question_ids.includes(id) ? t.question_ids.filter(x => x !== id) : [...t.question_ids, id]);
 
   const toggleSubject = (s) => upd("subjects", t.subjects.includes(s) ? t.subjects.filter(x => x !== s) : [...t.subjects, s]);
 
-  const randomFill = async () => {
+  // Auto-pick from the current filters (subject / class / chapter / topic / level); approved questions only
+  const real = (v) => (v && v !== NOT_SET ? [v] : undefined);
+  const randomFill = async (mode = "replace") => {
     try {
-      const r = await testsApi.random({ subjects: t.subjects, difficulty, count });
-      upd("question_ids", r.question_ids);
-      toast.success(`Picked ${r.question_ids.length} random questions`);
+      const r = await testsApi.random({
+        subjects: real(filters.subject) || t.subjects, classes: real(filters.student_class),
+        chapters: real(filters.chapter), topics: real(filters.topic),
+        difficulty: filters.difficulty || undefined, count,
+      });
+      const ids = mode === "add" ? [...new Set([...t.question_ids, ...r.question_ids])] : r.question_ids;
+      upd("question_ids", ids);
+      if (!r.question_ids.length) toast.error("No approved questions match these filters");
+      else toast.success(`Picked ${r.question_ids.length} random question(s)` + (r.available != null ? ` (from ${r.available} approved)` : ""));
     } catch { toast.error("Random pick failed"); }
   };
+  const pageIds = pg.rows.map((q) => q.id);
+  const allOnPage = pageIds.length > 0 && pageIds.every((id) => t.question_ids.includes(id));
+  const togglePage = () => upd("question_ids", allOnPage
+    ? t.question_ids.filter((id) => !pageIds.includes(id))
+    : [...new Set([...t.question_ids, ...pageIds])]);
 
   const save = async () => {
     if (!t.title) return toast.error("Title required");
@@ -49,8 +65,6 @@ export default function TestBuilder() {
       nav("/admin/tests");
     } catch { toast.error("Save failed"); }
   };
-
-  const filteredBank = bank.filter(q => t.subjects.length === 0 || t.subjects.includes(q.subject));
 
   return (
     <div data-testid="test-builder-page" className="grid lg:grid-cols-3 gap-6">
@@ -124,38 +138,56 @@ export default function TestBuilder() {
           </div>
         </Card>
 
-        <Card className="en-card p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="font-display font-semibold text-lg">Auto-pick questions</h3>
+        <Card className="en-card p-6 space-y-4" data-testid="test-builder-bank">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="font-display font-semibold text-lg">Pick questions</h3>
+              <p className="text-xs text-muted-foreground">Filter by subject → class → chapter → topic, tick questions on any page, or auto-pick.</p>
+            </div>
             <div className="flex items-center gap-2">
-              <Select value={difficulty || "any"} onValueChange={(v) => setDifficulty(v === "any" ? "" : v)}>
-                <SelectTrigger className="w-32"><SelectValue placeholder="Any difficulty" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="any">Any</SelectItem>
-                  <SelectItem value="easy">Easy</SelectItem>
-                  <SelectItem value="medium">Medium</SelectItem>
-                  <SelectItem value="hard">Hard</SelectItem>
-                </SelectContent>
-              </Select>
-              <Input type="number" value={count} onChange={(e) => setCount(parseInt(e.target.value || 0))} className="w-20" />
-              <Button data-testid="auto-pick-btn" variant="outline" onClick={randomFill} className="rounded-full"><Wand2 className="h-4 w-4 mr-2" />Pick</Button>
+              <Input type="number" min={1} value={count} onChange={(e) => setCount(parseInt(e.target.value || 0))} className="w-20 h-9" data-testid="auto-pick-count" />
+              <Button data-testid="auto-pick-btn" variant="outline" onClick={() => randomFill("replace")} className="rounded-full"><Wand2 className="h-4 w-4 mr-2" />Auto-pick</Button>
+              {t.question_ids.length > 0 && (
+                <Button data-testid="auto-pick-add-btn" variant="ghost" size="sm" onClick={() => randomFill("add")} className="rounded-full">+ Add more</Button>
+              )}
             </div>
           </div>
-          <div className="max-h-96 overflow-y-auto en-scroll space-y-2 border border-border rounded-xl p-3">
-            {filteredBank.map(q => (
+          <BankFilters filters={filters} setFilters={setFilters} tax={tax} show={["difficulty", "type", "status"]} testId="tb-filters" />
+          <NumberedPager testId="tb-pager" page={pg.page} pages={pg.pages} total={pg.total} pageSize={pg.pageSize}
+            onPage={pg.setPage} onPageSize={pg.setPageSize} loading={pg.loading} sizes={[20, 30, 50, 100]} />
+          <div className="flex items-center justify-between text-sm">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" className="h-4 w-4 accent-primary" data-testid="tb-select-page" checked={allOnPage} onChange={togglePage} />
+              Select all on this page
+            </label>
+            <span className="text-muted-foreground"><b className="text-foreground">{t.question_ids.length}</b> selected for this test</span>
+          </div>
+          <div className="space-y-2 border border-border rounded-xl p-3">
+            {pg.loading && pg.rows.length === 0 && <div className="text-sm text-muted-foreground py-6 text-center">Loading…</div>}
+            {!pg.loading && pg.rows.length === 0 && <div className="text-sm text-muted-foreground py-6 text-center">No questions match these filters.</div>}
+            {pg.rows.map((q, i) => (
               <label key={q.id} className={`flex items-start gap-3 p-3 rounded-lg cursor-pointer ${t.question_ids.includes(q.id) ? "bg-primary/10 border border-primary/30" : "hover:bg-muted/60 border border-transparent"}`}>
                 <input data-testid={`pick-${q.id}`} type="checkbox" className="mt-1 h-4 w-4 accent-primary" checked={t.question_ids.includes(q.id)} onChange={() => toggleQ(q.id)} />
+                <span className="mt-0.5 w-8 shrink-0 text-xs text-muted-foreground tabular-nums">{(pg.page - 1) * pg.pageSize + i + 1}.</span>
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm line-clamp-2">{q.text}</div>
-                  <div className="flex flex-wrap gap-2 mt-1">
+                  <div className="text-sm line-clamp-2"><MathText>{(q.text || "").split("\n")[0]}</MathText></div>
+                  <div className="flex flex-wrap gap-1.5 mt-1">
                     <Badge variant="secondary" className="rounded-full">{q.subject}</Badge>
+                    {q.student_class && <Badge variant="outline" className="rounded-full">{classLabel(q.student_class)}</Badge>}
+                    {q.chapter && <Badge variant="outline" className="rounded-full max-w-[220px] truncate">{q.chapter}</Badge>}
+                    {q.topic && <Badge variant="outline" className="rounded-full max-w-[180px] truncate">{q.topic}</Badge>}
                     <Badge variant="outline" className="rounded-full">{q.difficulty}</Badge>
+                    {q.status && q.status !== "approved" && <Badge variant="outline" className={`rounded-full border ${STATUS_STYLE[q.status] || ""}`}>{q.status}</Badge>}
                     <Badge variant="outline" className="rounded-full">{q.marks} mk</Badge>
                   </div>
                 </div>
               </label>
             ))}
           </div>
+          {pg.total > pg.pageSize && (
+            <NumberedPager testId="tb-pager-bottom" page={pg.page} pages={pg.pages} total={pg.total} pageSize={pg.pageSize}
+              onPage={pg.setPage} loading={pg.loading} />
+          )}
         </Card>
       </div>
 
