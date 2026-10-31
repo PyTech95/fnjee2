@@ -1,0 +1,141 @@
+name: iOS app
+
+# Builds the FNJEE iOS app (Capacitor shell for https://fnjee.com) on a GitHub macOS runner.
+# Always:  FNJEE-iOS-Simulator.zip (runs in the iPhone Simulator) + FNJEE-unsigned.xcarchive.zip
+# With the App Store Connect secrets below it also signs, exports FNJEE.ipa and uploads it to
+# App Store Connect / TestFlight (Xcode creates the certificate + profile automatically):
+#   APPLE_TEAM_ID        10-character Team ID (developer.apple.com → Membership)
+#   ASC_KEY_ID           App Store Connect API key ID   (Users and Access → Integrations → Keys, role Admin)
+#   ASC_ISSUER_ID        Issuer ID shown on the same page
+#   ASC_KEY_P8_BASE64    base64 of the downloaded AuthKey_XXXX.p8 file
+# main → release tag "ios-latest";  feature/mobile-* and release/* branches → "ios-preview".
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: "Upload the signed build to App Store Connect / TestFlight"
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - "mobile-app/**"
+      - ".github/workflows/ios.yml"
+  push:
+    branches: [main, "feature/mobile-*", "release/*"]
+    paths:
+      - "mobile-app/**"
+      - ".github/workflows/ios.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    env:
+      HAS_ASC: ${{ secrets.APPLE_TEAM_ID != '' && secrets.ASC_KEY_ID != '' && secrets.ASC_ISSUER_ID != '' && secrets.ASC_KEY_P8_BASE64 != '' }}
+      VERSION_CODE: ${{ github.run_number }}
+      PROJECT: ios/App/App.xcodeproj
+    defaults:
+      run:
+        working-directory: mobile-app
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Select the newest Xcode 26
+        run: |
+          X=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$X" ]; then sudo xcode-select -s "$X/Contents/Developer"; fi
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install Capacitor
+        run: npm install --no-audit --no-fund
+
+      - name: Create iOS project
+        run: |
+          npx cap add ios --packagemanager SPM
+          ./prepare-ios.sh
+          npx cap sync ios
+          xcodebuild -resolvePackageDependencies -project "$PROJECT" -scheme App
+
+      - name: Simulator build (test on a Mac without any Apple account)
+        run: |
+          xcodebuild build -project "$PROJECT" -scheme App -configuration Release \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/sim CODE_SIGNING_ALLOWED=NO | tail -20
+          mkdir -p out
+          ditto -c -k --sequesterRsrc --keepParent build/sim/Build/Products/Release-iphonesimulator/App.app out/FNJEE-iOS-Simulator.zip
+
+      - name: Device archive (unsigned — proves the App Store build compiles)
+        run: |
+          xcodebuild archive -project "$PROJECT" -scheme App -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath build/FNJEE-unsigned.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" | tail -20
+          ditto -c -k --sequesterRsrc --keepParent build/FNJEE-unsigned.xcarchive out/FNJEE-unsigned.xcarchive.zip
+          /usr/libexec/PlistBuddy -c "Print" build/FNJEE-unsigned.xcarchive/Products/Applications/App.app/Info.plist \
+            | grep -E "CFBundle(Identifier|ShortVersionString|Version|DisplayName)|MinimumOSVersion|DTXcode|DTPlatformVersion" \
+            | tee out/build-info.txt
+
+      - name: Sign, export IPA and upload to App Store Connect
+        if: env.HAS_ASC == 'true'
+        env:
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+          KEY_B64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          UPLOAD: ${{ github.event_name != 'workflow_dispatch' && 'false' || inputs.upload }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          KEY_PATH=~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
+          echo "$KEY_B64" | base64 --decode > "$KEY_PATH"
+          AUTH=(-allowProvisioningUpdates -authenticationKeyPath "$KEY_PATH" -authenticationKeyID "$KEY_ID" -authenticationKeyIssuerID "$ISSUER")
+          xcodebuild archive -project "$PROJECT" -scheme App -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath build/FNJEE.xcarchive \
+            DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Automatic "${AUTH[@]}" | tail -20
+          for DEST in export upload; do
+            [ "$DEST" = upload ] && [ "$UPLOAD" != "true" ] && continue
+            cat > build/ExportOptions-$DEST.plist <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>$DEST</string>
+            <key>teamID</key><string>$TEAM</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>uploadSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict></plist>
+          PLIST
+            sed -i '' 's/^          //' build/ExportOptions-$DEST.plist
+            xcodebuild -exportArchive -archivePath build/FNJEE.xcarchive \
+              -exportOptionsPlist build/ExportOptions-$DEST.plist -exportPath build/export-$DEST "${AUTH[@]}" | tail -20
+          done
+          cp build/export-export/*.ipa out/FNJEE.ipa
+          rm -f "$KEY_PATH"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnjee-ios
+          path: mobile-app/out/*
+          if-no-files-found: error
+
+      - name: Publish to GitHub Releases
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then TAG=ios-latest; PRE=""; else TAG=ios-preview; PRE="--prerelease"; fi
+          gh release delete "$TAG" --cleanup-tag -y || true
+          gh release create "$TAG" $PRE --target "$GITHUB_SHA" --title "FNJEE iOS app — build ${VERSION_CODE} (${GITHUB_REF_NAME})" \
+            --notes "Build #${VERSION_CODE} from ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. FNJEE.ipa is present only when the App Store Connect secrets are set." \
+            out/*

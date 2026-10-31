@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>FNJEE</title>
+<style>
+  body{margin:0;font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif;background:#FAF7F2;color:#1f2937;
+       display:flex;min-height:100vh;align-items:center;justify-content:center;text-align:center;
+       padding:calc(24px + env(safe-area-inset-top)) 24px calc(24px + env(safe-area-inset-bottom))}
+  img{width:96px;height:96px}
+  h2{margin:16px 0 8px}
+  p{margin:4px 0;color:#4b5563;line-height:1.5}
+  button{margin-top:20px;padding:12px 32px;border:0;border-radius:999px;background:#0A66C2;color:#fff;font-size:16px;font-weight:600}
+</style></head>
+<body><div>
+  <img src="icon.png" alt="FNJEE">
+  <h2>No internet connection</h2>
+  <p>FNJEE needs the internet to load your tests.</p>
+  <p>Internet connection nahi mila. Please internet on karke dobara try karein.</p>
+  <button onclick="location.href='https://fnjee.com/login'">Try again</button>
+</div>
+<script>window.addEventListener('online',function(){location.href='https://fnjee.com/login'});</script>
+</body></html>
