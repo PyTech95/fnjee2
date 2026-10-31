@@ -76,6 +76,15 @@ jobs:
           cp "$ANDROID_HOME/build-tools/$BT/lib/apksigner.jar" ../out/apksigner.jar
           "$ANDROID_HOME/build-tools/$BT/aapt2" dump badging ../out/FNJEE-debug.apk | head -5 | tee ../out/badging.txt
 
+      - name: Validate the App Bundle (bundletool)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo google/bundletool --pattern 'bundletool-all-*.jar' --output "$RUNNER_TEMP/bundletool.jar"
+          java -jar "$RUNNER_TEMP/bundletool.jar" validate --bundle=out/FNJEE-release-unsigned.aab | tail -5
+          java -jar "$RUNNER_TEMP/bundletool.jar" dump manifest --bundle=out/FNJEE-release-unsigned.aab > out/aab-manifest.xml
+          grep -E 'versionCode|targetSdkVersion|package=' out/aab-manifest.xml | head -5
+
       - name: Sign release (only if signing secrets are set)
         if: env.HAS_KS == 'true'
         env:
