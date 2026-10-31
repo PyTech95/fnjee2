@@ -173,3 +173,13 @@ h1, h2, h3, h4, h5, h6, .font-display {
 @media (prefers-reduced-motion: reduce) {
   .mkt-marquee-track, .mkt-blob { animation: none !important; }
 }
+
+/* Android / iOS app (and installed PWA): full-screen exam pages have their own top bar, keep it clear
+   of the status bar / notch. env() is 0 in normal browsers, so the website is unchanged. */
+[data-testid="live-exam-page"],
+[data-testid="cbt-exam-page"],
+[data-testid="cbt-pre-exam"],
+[data-testid="demo-exam-login"] {
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}
