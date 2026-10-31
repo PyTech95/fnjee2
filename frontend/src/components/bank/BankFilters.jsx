@@ -2,8 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { Search, X } from "lucide-react";
-import { ANY, NOT_SET, SUBJECTS, EMPTY_FILTERS, taxonomyOptions, labelOf, classLabel } from "@/lib/bank";
+import { Search, SlidersHorizontal, ArrowUpDown } from "lucide-react";
+import { ANY, NOT_SET, SUBJECTS, SORTS, taxonomyOptions, labelOf, classLabel } from "@/lib/bank";
+import { MoreFilters, FilterChips } from "@/components/bank/MoreFilters";
+
+const MORE_KEYS = ["exam", "year", "source", "tag", "language", "answer", "solution", "image", "added", "duplicates", "issue"];
 
 const TYPES = [
   ["mcq_single", "MCQ (single)"], ["mcq_multi", "MCQ (multi)"], ["integer", "Integer"],
@@ -16,8 +19,11 @@ const TYPES = [
  * level above, with counts) + difficulty / type / status / text search.
  * `show` picks extra filters: ["difficulty", "type", "status"].
  */
-export default function BankFilters({ filters, setFilters, tax, show = ["difficulty", "type", "status"], compact = false, testId = "bank-filters" }) {
+export default function BankFilters({ filters, setFilters, tax, show = ["difficulty", "type", "status"], compact = false,
+  testId = "bank-filters", facets = null, sort = null, setSort = null }) {
   const [search, setSearch] = useState(filters.search || "");
+  const moreActive = MORE_KEYS.filter((k) => filters[k]).length;
+  const [moreOpen, setMoreOpen] = useState(moreActive > 0);
   useEffect(() => { setSearch(filters.search || ""); }, [filters.search]);
   useEffect(() => {          // debounce typing
     const t = setTimeout(() => {
@@ -38,7 +44,6 @@ export default function BankFilters({ filters, setFilters, tax, show = ["difficu
   const v = (x) => x || ANY;
   const pick = (x) => (x === ANY ? "" : x);
   const optVal = (name) => (name ? name : NOT_SET);
-  const active = Object.entries(filters).some(([k, val]) => val && val !== ANY && k !== "untagged") || filters.untagged;
 
   const cell = compact ? "h-9 text-xs" : "";
   return (
@@ -115,13 +120,33 @@ export default function BankFilters({ filters, setFilters, tax, show = ["difficu
           </SelectContent>
         </Select>
       )}
-      {active && (
-        <Button type="button" variant="ghost" size="sm" data-testid={`${testId}-clear`}
-          className={`justify-self-start rounded-full ${compact ? "h-8 text-xs" : ""}`}
-          onClick={() => { setSearch(""); setFilters({ ...EMPTY_FILTERS }); }}>
-          <X className="h-4 w-4 mr-1" /> Clear filters
-        </Button>
+      {(facets || setSort) && (
+        <div className={`flex flex-wrap items-center gap-2 ${compact ? "col-span-2" : "sm:col-span-2 lg:col-span-4"}`}>
+          {facets && (
+            <Button type="button" variant={moreOpen ? "secondary" : "outline"} size="sm" className="rounded-full h-8"
+              data-testid={`${testId}-more`} onClick={() => setMoreOpen((o) => !o)}>
+              <SlidersHorizontal className="h-4 w-4 mr-1.5" /> More filters{moreActive ? ` (${moreActive})` : ""}
+            </Button>
+          )}
+          {setSort && (
+            <Select value={sort || "newest"} onValueChange={setSort}>
+              <SelectTrigger data-testid={`${testId}-sort`} className="h-8 w-auto min-w-[190px] rounded-full text-sm">
+                <ArrowUpDown className="h-3.5 w-3.5 mr-1.5 opacity-60" /><SelectValue />
+              </SelectTrigger>
+              <SelectContent>{SORTS.map(([k, l]) => <SelectItem key={k} value={k}>{l}</SelectItem>)}</SelectContent>
+            </Select>
+          )}
+        </div>
       )}
+      {facets && moreOpen && (
+        <div className={compact ? "col-span-2" : "sm:col-span-2 lg:col-span-4"}>
+          <MoreFilters filters={filters} setFilters={setFilters} facets={facets} testId={`${testId}-more-panel`} />
+        </div>
+      )}
+      <div className={compact ? "col-span-2" : "sm:col-span-2 lg:col-span-4"}>
+        <FilterChips filters={filters} setFilters={(f) => { setFilters(f); if (typeof f === "object" && !f.search) setSearch(""); }}
+          testId={`${testId}-chips`} />
+      </div>
     </div>
   );
 }

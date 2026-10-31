@@ -12,6 +12,7 @@ import { BlogIndex, BlogPost } from "@/pages/marketing/Blog";
 import { Features, HowItWorks, Pricing, Results, FAQ, Contact } from "@/pages/marketing/OtherPages";
 import CoursesListing from "@/pages/marketing/CoursesListing";
 import CourseDetail from "@/pages/marketing/CourseDetail";
+import { PrivacyPolicy, TermsOfUse, DeleteAccount } from "@/pages/Legal";
 import DPP from "@/pages/student/DPP";
 import Flashcards from "@/pages/student/Flashcards";
 import Mindmaps from "@/pages/student/Mindmaps";
@@ -112,6 +113,11 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/demo" element={<DemoExam />} />
+
+          {/* Legal (also linked from the Android / iOS store listings) */}
+          <Route path="/privacy" element={<PrivacyPolicy />} />
+          <Route path="/terms" element={<TermsOfUse />} />
+          <Route path="/delete-account" element={<DeleteAccount />} />
 
           {/* Portals */}
           <Route path="/admin" element={<Protected roles={["admin"]}><AdminLayout /></Protected>}>

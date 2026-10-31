@@ -36,6 +36,7 @@ export const questionsApi = {
   bulkUpdateByFilter: (filter, patch, add_tags) => api.post("/questions/bulk-update", { filter, patch, add_tags }).then((r) => r.data),
   // Subject → Class → Chapter → Topic tree with counts
   taxonomy: (params) => api.get("/questions/taxonomy", { params }).then((r) => r.data),
+  facets: () => api.get("/questions/facets").then((r) => r.data),
   normalizeTaxonomy: (dry_run = false) => api.post("/questions/normalize-taxonomy", { dry_run }).then((r) => r.data),
   // AI fills class/chapter/topic; returns {job_id, count}; poll importApi.jobStatus(job_id)
   autoTagStart: (data = {}) => api.post("/questions/auto-tag/start", data).then((r) => r.data),
@@ -49,6 +50,7 @@ export const teacherApi = {
 
 export const practiceApi = {
   generate: (data) => api.post("/practice/generate", data).then((r) => r.data),
+  chapters: () => api.get("/practice/chapters").then((r) => r.data),
 };
 
 export const importApi = {

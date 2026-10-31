@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo, useRef } from "react";
+import { shareContent } from "@/lib/native";
 import { useParams, Link } from "react-router-dom";
 import { attemptsApi, testsApi, percentileApi, duelsApi, wrongRetestApi, coachApi } from "@/lib/api";
 import { Card } from "@/components/ui/card";
@@ -88,14 +89,11 @@ export default function Result() {
   const grade = percent >= 85 ? "Elite" : percent >= 70 ? "Strong" : percent >= 50 ? "Good" : percent >= 30 ? "Room to grow" : "Restart needed";
   const gradeColor = percent >= 70 ? "text-emerald-600" : percent >= 50 ? "text-primary" : percent >= 30 ? "text-amber-600" : "text-destructive";
 
-  const share = () => {
+  const share = async () => {
     const text = `I scored ${attempt.score}/${attempt.total_marks} (${percent}%) on ${test.title} @ FNJEE.com — predicted percentile ${percentile}. Try it: `;
     const url = window.location.origin;
     const wa = `https://wa.me/?text=${encodeURIComponent(text + url)}`;
-    if (navigator.share) {
-      navigator.share({ title: "FNJEE.com score", text, url }).catch(() => window.open(wa, "_blank"));
-    } else { window.open(wa, "_blank"); }
-    toast.success("Sharing…");
+    if (!(await shareContent({ title: "FNJEE.com score", text, url }))) window.open(wa, "_blank");
   };
 
   const challengeFriend = async () => {
@@ -105,7 +103,7 @@ export default function Result() {
       const text = `⚔️ I scored ${attempt.score}/${attempt.total_marks} on ${test.title}. Think you can beat me? FNJEE.com duel:`;
       const wa = `https://wa.me/?text=${encodeURIComponent(text + " " + link)}`;
       try { await navigator.clipboard.writeText(link); } catch {}
-      window.open(wa, "_blank");
+      if (!(await shareContent({ title: "FNJEE.com duel", text, url: link }))) window.open(wa, "_blank");
       toast.success(`Duel link copied · code ${d.code}`);
     } catch { toast.error("Could not create duel"); }
   };

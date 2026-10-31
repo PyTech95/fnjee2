@@ -170,7 +170,7 @@ const FAQS = [
   { q: "Is FNJEE.com free?", a: "Yes — the Free plan gives you unlimited CBT mocks and basic analytics forever. Premium plans add AI weak-topic drills, deep analytics and reattempts." },
   { q: "How does the CBT engine compare to NTA's?", a: "Pixel-identical. Same palette colours, same mark-for-review behaviour, same section switch, same auto-submit — so you feel zero surprise on exam day." },
   { q: "Do you cover NEET Biology (Botany + Zoology)?", a: "Yes — every NEET Biology MCQ is tagged to its NCERT source line, which is where 80%+ of NEET Biology questions come from." },
-  { q: "Which devices do you support?", a: "Any modern mobile or desktop browser. The site is also installable as a Progressive Web App — no separate Android/iOS app needed." },
+  { q: "Which devices do you support?", a: "Any modern mobile or desktop browser, plus the FNJEE app for Android and iPhone. Your account, tests and results are the same everywhere." },
   { q: "How is rank predicted?", a: "After every full mock, we compare your score against the current active cohort attempting the same paper — the more mocks you take, the tighter the prediction gets." },
   { q: "Do you have Olympiads and NTSE tests?", a: "Yes — NSO, IMO, NSTSE and NTSE, from Class 6 upwards. See our Olympiads page for the full list." },
   { q: "Can parents track their child?", a: "Yes — a dedicated Parent Portal gives you a read-only view of your child's progress, weak subjects, and full mock scores, plus the ability to assign a custom practice test." },

@@ -6,4 +6,4 @@ Disallow: /teacher/
 Disallow: /parent/
 Disallow: /api/
 
-Sitemap: https://hardened-quiz-app.preview.emergentagent.com/sitemap.xml
+Sitemap: https://fnjee.com/sitemap.xml

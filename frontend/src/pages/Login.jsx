@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { isNativeApp, dashboardFor } from "@/lib/native";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,7 +10,6 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "sonner";
 
 const DEMO = {
-  admin: { email: "admin@examnest.io", password: "Admin@123" },
   teacher: { email: "teacher1@examnest.io", password: "Teacher@123" },
   student: { email: "student1@examnest.io", password: "Student@123" },
   parent: { email: "parent1@examnest.io", password: "Parent@123" },
@@ -20,8 +20,16 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const { login } = useAuth();
+  const { login, user, loading } = useAuth();
   const nav = useNavigate();
+  const [params] = useSearchParams();
+  const next = (params.get("next") || "").startsWith("/") && !(params.get("next") || "").startsWith("//") ? params.get("next") : "";
+  const native = isNativeApp();
+  // already signed in (e.g. the app opening at /login) → straight to the dashboard
+  useEffect(() => {
+    if (!loading && user) nav(next || dashboardFor(user.role), { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, user]);
 
   const submit = async (e) => {
     e?.preventDefault();
@@ -29,13 +37,13 @@ export default function Login() {
     try {
       const u = await login({ email, password, role });
       toast.success(`Welcome back, ${u.name}!`);
-      nav(u.role === "admin" ? "/admin" : u.role === "parent" ? "/parent" : u.role === "teacher" ? "/teacher" : "/student");
+      nav(next || dashboardFor(u.role));
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Login failed");
     } finally { setBusy(false); }
   };
 
-  const useDemo = () => { setEmail(DEMO[role].email); setPassword(DEMO[role].password); };
+  const useDemo = () => { if (!DEMO[role]) return; setEmail(DEMO[role].email); setPassword(DEMO[role].password); };
 
   return (
     <div data-testid="login-page" className="min-h-screen grid lg:grid-cols-2">
@@ -55,6 +63,7 @@ export default function Login() {
       <div className="flex items-center justify-center p-8">
         <Card className="w-full max-w-md p-8 rounded-3xl border-border">
           <div className="mb-6">
+            <img src="/fnjee-logo.png" alt="FNJEE.com" className="h-10 w-auto mb-5 lg:hidden" data-testid="login-mobile-logo" />
             <h1 className="font-display font-bold text-3xl tracking-tight">Welcome back</h1>
             <p className="text-sm text-muted-foreground mt-1">Choose your role to sign in.</p>
           </div>
@@ -69,7 +78,7 @@ export default function Login() {
               <form onSubmit={submit} className="space-y-4">
                 <div>
                   <Label htmlFor="email">Email</Label>
-                  <Input data-testid="login-email" id="email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@examnest.io" />
+                  <Input data-testid="login-email" id="email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
                 </div>
                 <div>
                   <Label htmlFor="password">Password</Label>
@@ -77,13 +86,21 @@ export default function Login() {
                 </div>
                 <div className="flex gap-2">
                   <Button data-testid="login-submit" type="submit" disabled={busy} className="rounded-full flex-1">{busy ? "Signing in…" : "Sign in"}</Button>
-                  <Button data-testid="use-demo-btn" type="button" variant="outline" className="rounded-full" onClick={useDemo}>Use demo</Button>
+                  {/* demo logins: never for admin, never inside the store apps */}
+                  {!native && role !== "admin" && (
+                    <Button data-testid="use-demo-btn" type="button" variant="outline" className="rounded-full" onClick={useDemo}>Use demo</Button>
+                  )}
                 </div>
               </form>
             </TabsContent>
           </Tabs>
           <div className="mt-6 text-sm text-muted-foreground">
             New here? <Link to="/signup" className="text-primary font-medium hover:underline">Create an account</Link>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground" data-testid="login-legal">
+            <Link to="/privacy" className="hover:underline">Privacy policy</Link>
+            <Link to="/terms" className="hover:underline">Terms of use</Link>
+            <Link to="/delete-account" className="hover:underline">Delete account</Link>
           </div>
         </Card>
       </div>

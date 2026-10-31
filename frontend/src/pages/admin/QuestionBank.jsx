@@ -11,7 +11,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Trash2, AlertTriangle, Download, Sparkles } from "lucide-react";
+import { Trash2, AlertTriangle, Download, Sparkles, Pencil, CheckCircle2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { QuestionContent, QuestionImage } from "@/components/QuestionContent";
@@ -20,19 +20,22 @@ import NumberedPager from "@/components/bank/NumberedPager";
 import BankFilters from "@/components/bank/BankFilters";
 import TaxonomyTree from "@/components/bank/TaxonomyTree";
 import MappingTools from "@/components/bank/MappingTools";
+import QuestionEditDialog from "@/components/bank/QuestionEditDialog";
+import AiFixPanel from "@/components/admin/AiFixPanel";
 import {
-  EMPTY_FILTERS, SUBJECTS, NOT_SET, STATUS_STYLE, toParams, useQuestionPage, useTaxonomy, classLabel,
+  EMPTY_FILTERS, SUBJECTS, NOT_SET, STATUS_STYLE, toParams, useQuestionPage, useTaxonomy, useFacets, classLabel,
 } from "@/lib/bank";
 
-const ISSUE_LABEL = { "no-answer": "Answer nahi hai", "picture-missing": "Picture missing", "ai-unsure": "AI ko yakeen nahi",
-  "ai-answered": "AI answer — check karein", "options-missing": "Options missing" };
 const DIFF_COLOR = { easy: "bg-emerald-500/10 text-emerald-600 border-emerald-500/20", medium: "bg-amber-500/10 text-amber-600 border-amber-500/20", hard: "bg-red-500/10 text-red-600 border-red-500/20" };
 const EMPTY_BULK = { subject: "", student_class: "", chapter: "", topic: "", difficulty: "", status: "", tags: "" };
 
 export default function QuestionBank() {
   const [filters, setFilters] = useState({ ...EMPTY_FILTERS });
   const { tax, reload: reloadTax } = useTaxonomy();
-  const pg = useQuestionPage(filters, 50);
+  const { facets, reload: reloadFacets } = useFacets();
+  const [sort, setSort] = useState("newest");
+  const pg = useQuestionPage(filters, 50, sort);
+  const [editing, setEditing] = useState(null);       // question open in the edit dialog
   const { rows } = pg;
 
   const [sel, setSel] = useState(new Set());
@@ -41,7 +44,12 @@ export default function QuestionBank() {
   const [deleting, setDeleting] = useState(false);
   const [bulkEdit, setBulkEdit] = useState({ ...EMPTY_BULK });
 
-  const refresh = () => { pg.reload(); reloadTax(); setSel(new Set()); setAllMatching(false); };
+  const refresh = () => { pg.reload(); reloadTax(); reloadFacets(); setSel(new Set()); setAllMatching(false); };
+  const replaceRow = (q) => { pg.setRows((rs) => rs.map((r) => (r.id === q.id ? q : r))); reloadTax(); reloadFacets(); };
+  const approve = async (r) => {
+    try { replaceRow(await questionsApi.patch(r.id, { status: "approved" })); toast.success("Approved"); }
+    catch (e) { toast.error(e?.response?.data?.detail || "Could not approve"); }
+  };
   const applyFilters = (f) => { setFilters(f); setSel(new Set()); setAllMatching(false); };
   const setFiltersFn = (updater) => {
     setFilters((f) => (typeof updater === "function" ? updater(f) : updater));
@@ -75,13 +83,12 @@ export default function QuestionBank() {
   const exportExcel = async () => {
     setExporting(true);
     try {
-      const params = {};
-      ["subject", "chapter", "student_class", "status_f"].forEach((k) => {
-        if (filters[k] && filters[k] !== NOT_SET) params[k] = filters[k];
-      });
+      const params = { ...toParams(filters), ...(sort !== "newest" ? { sort } : {}) };
       const blob = await importApi.exportBank(params);
-      downloadBlob(blob, `FNJEE_Questions_${params.subject || "All"}${params.chapter ? "_" + params.chapter.replace(/\W+/g, "_") : ""}.xlsx`);
-      toast.success("Excel downloaded — edit it and upload again via Bulk import");
+      const name = [params.subject || "All", params.student_class, params.chapter].filter((x) => x && x !== "__none__")
+        .join("_").replace(/\W+/g, "_");
+      downloadBlob(blob, `FNJEE_Questions_${name}.xlsx`);
+      toast.success(`Excel downloaded (${pg.total.toLocaleString()} questions) — edit it and upload again via Bulk import`);
     } catch (e) {
       toast.error("Export failed");
     } finally { setExporting(false); }
@@ -147,10 +154,12 @@ export default function QuestionBank() {
           <Link to="/admin/questions/new"><Button data-testid="new-question-btn" className="rounded-full">+ New question</Button></Link>
           <Link to="/admin/import"><Button data-testid="go-import-btn" variant="outline" className="rounded-full">Bulk import</Button></Link>
           <Button data-testid="export-excel-btn" variant="outline" className="rounded-full" onClick={exportExcel} disabled={exporting}>
-            <Download className="h-4 w-4 mr-2" />{exporting ? "Exporting…" : "Export to Excel"}
+            <Download className="h-4 w-4 mr-2" />{exporting ? "Exporting…" : pg.total && pg.total !== tax?.total ? `Export ${pg.total.toLocaleString()} to Excel` : "Export to Excel"}
           </Button>
         </div>
       </div>
+
+      <AiFixPanel onFinished={refresh} onShowIssue={(issue) => applyFilters({ ...EMPTY_FILTERS, issue })} />
 
       <MappingTools tax={tax} onChanged={refresh} jobId={tagJob}
         onShowUntagged={() => applyFilters({ ...EMPTY_FILTERS, untagged: true })}
@@ -167,13 +176,7 @@ export default function QuestionBank() {
         {/* right: filters + list */}
         <div className="space-y-4 min-w-0">
           <Card className="en-card p-4">
-            <BankFilters filters={filters} setFilters={setFiltersFn} tax={tax} />
-            {filters.untagged && (
-              <div className="mt-3 text-sm flex items-center gap-2" data-testid="untagged-filter-on">
-                <Badge variant="outline" className="rounded-full border-amber-500/40 text-amber-700">Showing: missing class / chapter / topic</Badge>
-                <Button size="sm" variant="link" className="h-auto p-0" onClick={() => applyFilters({ ...EMPTY_FILTERS })}>Show all</Button>
-              </div>
-            )}
+            <BankFilters filters={filters} setFilters={setFiltersFn} tax={tax} facets={facets} sort={sort} setSort={setSort} />
           </Card>
 
           {/* Bulk action bar — visible when rows are selected */}
@@ -244,7 +247,7 @@ export default function QuestionBank() {
           <NumberedPager page={pg.page} pages={pg.pages} total={pg.total} pageSize={pg.pageSize}
             onPage={go} onPageSize={(n) => { pg.setPageSize(n); setAllMatching(false); }} loading={pg.loading} />
 
-          <Card className="en-card overflow-hidden">
+          <Card className="en-card overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -258,14 +261,13 @@ export default function QuestionBank() {
                   <TableHead>Chapter / Topic</TableHead>
                   <TableHead>Level / Type</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Marks</TableHead>
                   <TableHead className="text-right">Action</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {pg.loading && rows.length === 0 && <TableRow><TableCell colSpan={10} className="text-center text-muted-foreground py-8">Loading…</TableCell></TableRow>}
+                {pg.loading && rows.length === 0 && <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-8">Loading…</TableCell></TableRow>}
                 {!pg.loading && rows.length === 0 && (
-                  <TableRow><TableCell colSpan={10} className="text-center text-muted-foreground py-8">
+                  <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-8">
                     {pg.total === 0 && tax?.total ? "No questions match these filters." : "No questions yet. Try the Import Wizard."}
                   </TableCell></TableRow>
                 )}
@@ -299,12 +301,17 @@ export default function QuestionBank() {
                     </TableCell>
                     <TableCell>
                       <Badge className={`rounded-full border ${DIFF_COLOR[r.difficulty] || ""}`} variant="outline">{r.difficulty}</Badge>
-                      <div className="mt-1 text-[11px] text-muted-foreground whitespace-nowrap">{(r.type || "").replace("_", " ")}</div>
+                      <div className="mt-1 text-[11px] text-muted-foreground whitespace-nowrap">{(r.type || "").replace("_", " ")} · {r.marks} mk</div>
                     </TableCell>
                     <TableCell><Badge variant="outline" className={`rounded-full border ${STATUS_STYLE[r.status] || ""}`}>{r.status || "approved"}</Badge></TableCell>
-                    <TableCell className="text-right font-medium">{r.marks}</TableCell>
-                    <TableCell className="text-right">
-                      <Button data-testid={`delete-q-${r.id}`} size="icon" variant="ghost" onClick={() => remove(r.id)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                    <TableCell className="text-right whitespace-nowrap">
+                      {r.status && r.status !== "approved" && (
+                        <Button data-testid={`approve-q-${r.id}`} size="icon" variant="ghost" title="Approve" onClick={() => approve(r)}>
+                          <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                        </Button>
+                      )}
+                      <Button data-testid={`edit-q-${r.id}`} size="icon" variant="ghost" title="Edit" onClick={() => setEditing(r)}><Pencil className="h-4 w-4" /></Button>
+                      <Button data-testid={`delete-q-${r.id}`} size="icon" variant="ghost" title="Delete" onClick={() => remove(r.id)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -318,6 +325,9 @@ export default function QuestionBank() {
           )}
         </div>
       </div>
+
+      <QuestionEditDialog question={editing} open={!!editing} onOpenChange={(o) => !o && setEditing(null)}
+        syllabus={tax?.syllabus} onSaved={replaceRow} />
 
       <AlertDialog open={confirmBulk} onOpenChange={setConfirmBulk}>
         <AlertDialogContent data-testid="bulk-delete-confirm">
