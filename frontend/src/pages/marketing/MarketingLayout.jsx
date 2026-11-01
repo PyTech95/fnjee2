@@ -1,4 +1,6 @@
-import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation, Navigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
+import { isNativeApp, dashboardFor } from "@/lib/native";
 import { useState, useEffect } from "react";
 import { Menu, X, ArrowUpRight, Monitor } from "lucide-react";
 
@@ -15,7 +17,15 @@ const NAV = [
 export default function MarketingLayout() {
   const [open, setOpen] = useState(false);
   const loc = useLocation();
+  const { user, loading } = useAuth();
   useEffect(() => { setOpen(false); }, [loc.pathname]);
+
+  // Inside the Android / iOS app the marketing site (pricing, courses…) is skipped: the app is
+  // for studying, and app stores don't allow selling outside their in-app purchase systems.
+  if (isNativeApp()) {
+    if (loading) return null;
+    return <Navigate to={user ? dashboardFor(user.role) : "/login"} replace />;
+  }
 
   return (
     <div data-testid="marketing-layout" className="min-h-screen bg-[#FAF7F2] text-[#09090B] flex flex-col" style={{ fontFamily: '"Satoshi", ui-sans-serif, system-ui, sans-serif' }}>
@@ -101,6 +111,9 @@ export default function MarketingLayout() {
               { to: "/contact", label: "Contact" },
               { to: "/cities", label: "Cities we serve" },
               { to: "/blog", label: "Blog" },
+              { to: "/privacy", label: "Privacy policy" },
+              { to: "/terms", label: "Terms of use" },
+              { to: "/delete-account", label: "Delete account" },
             ]} />
           </div>
         </div>

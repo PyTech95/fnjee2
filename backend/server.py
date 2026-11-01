@@ -228,7 +228,9 @@ class AssignTestIn(BaseModel):
 class ParentAssignIn(BaseModel):
     title: str
     subjects: List[str]
-    difficulty: Literal['easy', 'medium', 'hard'] = 'medium'
+    difficulty: Optional[Literal['easy', 'medium', 'hard', 'any']] = 'medium'
+    chapters: List[str] = []
+    topics: List[str] = []
     num_questions: int = 10
     duration_minutes: int = 30
     child_id: str
@@ -292,6 +294,51 @@ async def me(user: dict = Depends(get_current_user)):
     return user
 
 
+class DeleteAccountIn(BaseModel):
+    password: str
+    confirm: str
+
+
+# collections holding one user's own data, keyed by user_id
+_USER_DATA = ("attempts", "cbt_attempts", "notifications", "reviews", "doubts", "dpps", "enrollments",
+              "adaptive_sessions", "live_attendance", "counselling")
+
+
+@api.delete("/auth/me")
+async def delete_my_account(inp: DeleteAccountIn, request: Request, user: dict = Depends(get_current_user)):
+    """Permanently delete the signed-in account and its personal data (App Store 5.1.1(v) / Google Play
+    account-deletion requirement). Body: {password, confirm: "DELETE"}. The last admin can't delete itself."""
+    await rate_limit(f"delacct:{client_ip(request)}", limit=5, window_seconds=300)
+    if (inp.confirm or "").strip().upper() != "DELETE":
+        raise HTTPException(400, 'Type DELETE to confirm')
+    full = await db.users.find_one({"id": user["id"]})
+    if not full or not check_pw(inp.password, full.get("password") or ""):
+        raise HTTPException(401, "Wrong password")
+    if user["role"] == "admin" and await db.users.count_documents({"role": "admin"}) <= 1:
+        raise HTTPException(400, "This is the only admin account. Create another admin first.")
+    uid = user["id"]
+    cbt_ids = [a["id"] async for a in db.cbt_attempts.find({"user_id": uid}, {"_id": 0, "id": 1})]
+    if cbt_ids:
+        await db.cbt_responses.delete_many({"attempt_id": {"$in": cbt_ids}})
+    removed = {}
+    for name in _USER_DATA:
+        r = await db[name].delete_many({"user_id": uid})
+        removed[name] = r.deleted_count
+    # personal practice papers / quizzes built for this user only
+    removed["personal_tests"] = (await db.tests.delete_many({"created_by": uid, "personal": True})).deleted_count
+    await db.questions.delete_many({"created_by": uid, "personal": True})
+    await db.referrals.delete_many({"$or": [{"referrer_id": uid}, {"referee_id": uid}]})
+    await db.duels.delete_many({"$or": [{"creator_id": uid}, {"challenger_id": uid}, {"created_by": uid}]})
+    # unlink parents / children
+    await db.users.update_many({"child_ids": uid}, {"$pull": {"child_ids": uid}})
+    await db.users.update_many({"parent_ids": uid}, {"$pull": {"parent_ids": uid}})
+    await db.tests.update_many({"assigned_to": uid}, {"$pull": {"assigned_to": uid}})
+    await db.users.delete_one({"id": uid})
+    await db.account_deletions.insert_one({"id": new_id(), "role": user["role"], "deleted_at": now_iso()})
+    log.info(f"account deleted: role={user['role']}")
+    return {"ok": True, "deleted": removed}
+
+
 class SettingsIn(BaseModel):
     email_results_enabled: Optional[bool] = None
     reminder_hour: Optional[int] = None
@@ -349,30 +396,81 @@ async def purge_all_users(payload: dict, user: dict = Depends(require_role('admi
 
 NOT_SET = "__none__"          # filter value meaning "field is empty / missing"
 _EMPTY = {"$in": [None, ""]}
+_MISSING_ANS = {"$or": [
+    {"type": {"$ne": "subjective"}, "$or": [{"correct": {"$exists": False}}, {"correct": {"$size": 0}}]},
+    {"type": "subjective", "$or": [{"explanation": {"$exists": False}}, {"explanation": ""}]}]}
+_HAS_ANS = {"$nor": [_MISSING_ANS]}
+_NO_SOLUTION = {"explanation": {"$in": [None, ""]}, "explanation_image_url": {"$in": [None, ""]}}
+_HAS_IMAGE = {"image_url": {"$nin": [None, ""]}}
+
+# every filter the question bank understands (query-string names)
+FILTER_KEYS = ("subject", "chapter", "topic", "difficulty", "q_type", "status_f", "exam", "student_class",
+               "year", "series", "search", "untagged", "tag", "issue", "source", "language", "answer",
+               "solution", "image", "added", "date_from", "date_to", "marks")
 
 
 def _tag_cond(value):
     return _EMPTY if value == NOT_SET else value
 
 
+def _days_ago_iso(days: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
 def _question_filter(user: dict, subject=None, chapter=None, topic=None, difficulty=None, q_type=None,
                      status_f=None, exam=None, student_class=None, year=None, series=None, search=None,
-                     untagged: bool = False) -> dict:
+                     untagged: bool = False, tag=None, issue=None, source=None, language=None, answer=None,
+                     solution=None, image=None, added=None, date_from=None, date_to=None, marks=None) -> dict:
     q: dict = {}
+    ands: list = []
     if subject: q["subject"] = subject
     if chapter: q["chapter"] = _tag_cond(chapter)
     if topic: q["topic"] = _tag_cond(topic)
     if difficulty: q["difficulty"] = difficulty
     if q_type: q["type"] = q_type
     if status_f: q["status"] = status_f
-    if exam: q["exam"] = exam
+    if exam: q["exam"] = _tag_cond(exam)
     if student_class: q["student_class"] = _tag_cond(student_class)
-    if year: q["year"] = year
+    if year: q["year"] = _tag_cond(str(year))
     if series: q["series"] = series
-    if search: q["text"] = {"$regex": re.escape(search), "$options": "i"}
+    if source: q["source"] = _tag_cond(source)
+    if language: q["language"] = language
+    if tag: q["tags"] = {"$in": [None, []]} if tag == NOT_SET else tag
+    if marks not in (None, ""):
+        try: q["marks"] = float(marks)
+        except (TypeError, ValueError): pass
+    if search:
+        s = str(search).strip()
+        # "#a1b2c3" or a full id finds one question; anything else searches the text (and options)
+        if re.fullmatch(r"#?[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}", s):
+            q["id"] = s.lstrip("#")
+        else:
+            rx = {"$regex": re.escape(s), "$options": "i"}
+            ands.append({"$or": [{"text": rx}, {"options": rx}, {"text_hi": rx}]})
     if untagged:
         # missing any of class / chapter / topic → not reachable from the subject→chapter→topic view
-        q["$or"] = [{"student_class": _EMPTY}, {"chapter": _EMPTY}, {"topic": _EMPTY}]
+        ands.append({"$or": [{"student_class": _EMPTY}, {"chapter": _EMPTY}, {"topic": _EMPTY}]})
+    if answer == "missing": ands.append(_MISSING_ANS)
+    elif answer == "has": ands.append(_HAS_ANS)
+    if solution == "missing": ands.append(_NO_SOLUTION)
+    elif solution == "has": ands.append({"$nor": [_NO_SOLUTION]})
+    if image == "with": ands.append(_HAS_IMAGE)
+    elif image == "without": ands.append({"$nor": [_HAS_IMAGE]})
+    # issue = the AI Fix panel's problem lists
+    if issue == "no-answer": ands.append(_MISSING_ANS)
+    elif issue in ("picture-missing", "ai-unsure", "options-missing"): ands.append({"tags": issue})
+    elif issue == "ai-answered": q["answer_origin"] = "ai_generated"; q.setdefault("status", "review")
+    elif issue == "answer-review": q["answer_review_required"] = True
+    if added in ("today", "7d", "30d"):
+        q["created_at"] = {"$gte": {"today": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                                    "7d": _days_ago_iso(7), "30d": _days_ago_iso(30)}[added]}
+    if date_from or date_to:
+        rng = q.get("created_at") if isinstance(q.get("created_at"), dict) else {}
+        if date_from: rng["$gte"] = str(date_from)[:10]
+        if date_to: rng["$lte"] = str(date_to)[:10] + "\uffff"
+        q["created_at"] = rng
+    if ands:
+        q["$and"] = ands
     q["personal"] = {"$ne": True}
     # Teachers only see questions within their granted subjects (empty = unrestricted).
     # Exam/class are metadata that legacy questions may lack, so they are not hard-filtered here.
@@ -387,44 +485,122 @@ def _question_filter(user: dict, subject=None, chapter=None, topic=None, difficu
     return q
 
 
+def bank_filter_args(
+    subject: Optional[str] = None, chapter: Optional[str] = None, topic: Optional[str] = None,
+    difficulty: Optional[str] = None, q_type: Optional[str] = None, status_f: Optional[str] = None,
+    exam: Optional[str] = None, student_class: Optional[str] = None, year: Optional[str] = None,
+    series: Optional[str] = None, search: Optional[str] = None, untagged: bool = False,
+    tag: Optional[str] = None, issue: Optional[str] = None, source: Optional[str] = None,
+    language: Optional[str] = None, answer: Optional[str] = None, solution: Optional[str] = None,
+    image: Optional[str] = None, added: Optional[str] = None, date_from: Optional[str] = None,
+    date_to: Optional[str] = None, marks: Optional[str] = None,
+) -> dict:
+    """FastAPI dependency: the question-bank filter query parameters as a dict."""
+    return {k: v for k, v in locals().items()}
+
+
+_SORTS = {
+    "newest": [("created_at", -1), ("id", 1)],
+    "oldest": [("created_at", 1), ("id", 1)],
+    "updated": [("updated_at", -1), ("created_at", -1), ("id", 1)],
+    "chapter": [("subject", 1), ("student_class", 1), ("chapter", 1), ("topic", 1), ("created_at", 1), ("id", 1)],
+    "difficulty_asc": [("difficulty_rank", 1), ("created_at", -1), ("id", 1)],
+    "difficulty_desc": [("difficulty_rank", -1), ("created_at", -1), ("id", 1)],
+    "source": [("source", 1), ("source_number", 1), ("created_at", 1), ("id", 1)],
+}
+
+
+async def _find_sorted(q: dict, sort: Optional[str], skip: int, limit: int) -> list:
+    if sort in ("difficulty_asc", "difficulty_desc"):
+        rank = {"$switch": {"branches": [{"case": {"$eq": ["$difficulty", "easy"]}, "then": 1},
+                                         {"case": {"$eq": ["$difficulty", "medium"]}, "then": 2},
+                                         {"case": {"$eq": ["$difficulty", "hard"]}, "then": 3}], "default": 2}}
+        pipe = [{"$match": q}, {"$addFields": {"difficulty_rank": rank}},
+                {"$sort": dict(_SORTS[sort])}, {"$skip": skip}, {"$limit": limit},
+                {"$project": {"_id": 0, "difficulty_rank": 0}}]
+        return await db.questions.aggregate(pipe).to_list(limit)
+    return await db.questions.find(q, {"_id": 0}).sort(_SORTS.get(sort or "newest", _SORTS["newest"])) \
+        .skip(skip).limit(limit).to_list(limit)
+
+
+async def _with_duplicates(q: dict, want: bool) -> dict:
+    """Restrict q to questions whose exact text appears more than once in the bank."""
+    if not want:
+        return q
+    groups = await db.questions.aggregate([
+        {"$match": {"personal": {"$ne": True}, "text": {"$nin": [None, ""]}}},
+        {"$group": {"_id": "$text", "ids": {"$push": "$id"}, "n": {"$sum": 1}}},
+        {"$match": {"n": {"$gt": 1}}}]).to_list(100000)
+    ids = [i for g in groups for i in g["ids"]]
+    return {"$and": [q, {"id": {"$in": ids}}]}
+
+
 @api.get("/questions")
 async def list_questions(
-    subject: Optional[str] = None, chapter: Optional[str] = None,
-    topic: Optional[str] = None, difficulty: Optional[str] = None,
-    q_type: Optional[str] = None, status_f: Optional[str] = None,
-    exam: Optional[str] = None, student_class: Optional[str] = None,
-    year: Optional[str] = None, series: Optional[str] = None,
-    search: Optional[str] = None, limit: int = 200, skip: int = 0, untagged: bool = False,
-    user: dict = Depends(require_role('admin', 'teacher')),
+    f: dict = Depends(bank_filter_args), limit: int = 200, skip: int = 0, sort: Optional[str] = None,
+    duplicates: bool = False, user: dict = Depends(require_role('admin', 'teacher')),
 ):
-    q = _question_filter(user, subject, chapter, topic, difficulty, q_type, status_f, exam, student_class,
-                         year, series, search, untagged)
+    q = await _with_duplicates(_question_filter(user, **f), duplicates)
     limit = max(1, min(int(limit or 200), 2000))
-    docs = await db.questions.find(q, {"_id": 0}).sort("created_at", -1).skip(max(0, int(skip or 0))) \
-        .limit(limit).to_list(limit)
-    return docs
+    return await _find_sorted(q, sort, max(0, int(skip or 0)), limit)
 
 
 @api.get("/questions/page")
 async def list_questions_page(
-    subject: Optional[str] = None, chapter: Optional[str] = None,
-    topic: Optional[str] = None, difficulty: Optional[str] = None,
-    q_type: Optional[str] = None, status_f: Optional[str] = None,
-    exam: Optional[str] = None, student_class: Optional[str] = None,
-    year: Optional[str] = None, series: Optional[str] = None,
-    search: Optional[str] = None, page: int = 1, page_size: int = 50, untagged: bool = False,
-    user: dict = Depends(require_role('admin', 'teacher')),
+    f: dict = Depends(bank_filter_args), page: int = 1, page_size: int = 50, sort: Optional[str] = None,
+    duplicates: bool = False, user: dict = Depends(require_role('admin', 'teacher')),
 ):
-    """One page of the question bank + the total, so big banks (30k+) never load at once."""
-    q = _question_filter(user, subject, chapter, topic, difficulty, q_type, status_f, exam, student_class,
-                         year, series, search, untagged)
+    """One page of the question bank + the total, so big banks (30k+) never load at once.
+    issue: no-answer | picture-missing | ai-unsure | options-missing | ai-answered | answer-review
+    answer/solution: has | missing · image: with | without · added: today | 7d | 30d
+    sort: newest | oldest | updated | chapter | difficulty_asc | difficulty_desc | source"""
+    q = await _with_duplicates(_question_filter(user, **f), duplicates)
     page_size = max(10, min(int(page_size or 50), 200))
     page = max(1, int(page or 1))
     total = await db.questions.count_documents(q)
-    items = await db.questions.find(q, {"_id": 0}).sort([("created_at", -1), ("id", 1)]) \
-        .skip((page - 1) * page_size).limit(page_size).to_list(page_size)
+    items = await _find_sorted(q, sort, (page - 1) * page_size, page_size)
     return {"items": items, "total": total, "page": page, "page_size": page_size,
             "pages": max(1, (total + page_size - 1) // page_size)}
+
+
+@api.get("/questions/facets")
+async def question_facets(user: dict = Depends(require_role('admin', 'teacher'))):
+    """Values + counts for the "More filters" panel (exam, year, source, tag, language, type, …)."""
+    base = _question_filter(user)
+
+    async def counts(field, unwind=False, limit=300):
+        pipe = [{"$match": base}]
+        if unwind:
+            pipe.append({"$unwind": f"${field}"})
+        pipe += [{"$group": {"_id": f"${field}", "n": {"$sum": 1}}}, {"$sort": {"n": -1, "_id": 1}}, {"$limit": limit}]
+        rows = await db.questions.aggregate(pipe).to_list(limit)
+        return [{"name": str(r["_id"]) if r["_id"] not in (None, "") else "", "count": int(r["n"])} for r in rows]
+
+    async def n(extra):
+        return await db.questions.count_documents({"$and": [base, extra]})
+
+    dup_groups = await db.questions.aggregate([
+        {"$match": {**base, "text": {"$nin": [None, ""]}}},
+        {"$group": {"_id": "$text", "n": {"$sum": 1}}}, {"$match": {"n": {"$gt": 1}}},
+        {"$group": {"_id": None, "q": {"$sum": "$n"}}}]).to_list(1)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return {
+        "exams": await counts("exam"), "years": sorted(await counts("year"), key=lambda r: r["name"], reverse=True),
+        "sources": await counts("source"), "tags": await counts("tags", unwind=True),
+        "languages": await counts("language"), "types": await counts("type"),
+        "difficulties": await counts("difficulty"), "statuses": await counts("status"),
+        "marks": await counts("marks"),
+        "checks": {
+            "no_answer": await n(_MISSING_ANS), "no_solution": await n(_NO_SOLUTION),
+            "with_image": await n(_HAS_IMAGE), "duplicates": int(dup_groups[0]["q"]) if dup_groups else 0,
+            "picture_missing": await n({"tags": "picture-missing"}), "ai_unsure": await n({"tags": "ai-unsure"}),
+            "ai_answered": await n({"answer_origin": "ai_generated", "status": "review"}),
+            "answer_review": await n({"answer_review_required": True}),
+            "added_today": await n({"created_at": {"$gte": today}}),
+            "added_7d": await n({"created_at": {"$gte": _days_ago_iso(7)}}),
+            "added_30d": await n({"created_at": {"$gte": _days_ago_iso(30)}}),
+        },
+    }
 
 
 @api.get("/questions/chapters")
@@ -657,6 +833,14 @@ async def patch_question(qid: str, patch: dict, user: dict = Depends(require_rol
         valid = QuestionIn(**merged).model_dump()
     except Exception as e:
         raise HTTPException(422, str(e)[:400])
+    if set(patch) & {"subject", "student_class", "chapter", "topic"}:
+        cleaned = _with_clean_tags(dict(valid))
+        for k in ("subject", "student_class", "chapter", "topic"):
+            if k in patch:
+                valid[k] = cleaned[k]
+    if patch.get("status") == "approved" and "answer_review_required" not in patch:
+        patch["answer_review_required"] = False      # approving = a person checked the answer
+        valid["answer_review_required"] = False
     upd = externalize_question({k: valid[k] for k in patch}); upd["updated_at"] = now_iso()
     await db.questions.update_one({"id": qid}, {"$set": upd})
     return await db.questions.find_one({"id": qid}, {"_id": 0})
@@ -680,10 +864,9 @@ async def bulk_update_questions(payload: dict, user: dict = Depends(require_role
         target = {"id": {"$in": ids}}
     elif isinstance(flt, dict):
         # "select all N matching" — same filter params as GET /questions/page
-        keys = ("subject", "chapter", "topic", "difficulty", "q_type", "status_f", "exam",
-                "student_class", "year", "series", "search")
-        target = _question_filter(user, **{k: (flt.get(k) or None) for k in keys},
-                                  untagged=bool(flt.get("untagged")))
+        args = {k: (flt.get(k) or None) for k in FILTER_KEYS if k != "untagged"}
+        target = await _with_duplicates(_question_filter(user, **args, untagged=bool(flt.get("untagged"))),
+                                        bool(flt.get("duplicates")))
     else:
         raise HTTPException(400, "Select at least one question")
     allowed = {"chapter", "topic", "section", "difficulty", "status", "subject",
@@ -700,6 +883,8 @@ async def bulk_update_questions(payload: dict, user: dict = Depends(require_role
         raise HTTPException(400, "Nothing to change")
     modified = 0
     requested = len(ids) if ids else await db.questions.count_documents(target)
+    if upd.get("status") == "approved":
+        upd["answer_review_required"] = False
     if upd:
         upd["updated_at"] = now_iso()
         r = await db.questions.update_many(target, {"$set": upd})
@@ -1250,19 +1435,14 @@ async def import_template():
 
 @api.get("/questions/export")
 async def export_questions(
-    subject: Optional[str] = None, chapter: Optional[str] = None,
-    status_f: Optional[str] = None, exam: Optional[str] = None,
-    student_class: Optional[str] = None, limit: int = 20000,
-    user: dict = Depends(require_role('admin')),
+    f: dict = Depends(bank_filter_args), limit: int = 20000, sort: Optional[str] = None,
+    duplicates: bool = False, user: dict = Depends(require_role('admin')),
 ):
-    """Download the question bank in the same standard Excel format (edit & re-upload)."""
-    q: dict = {"personal": {"$ne": True}}
-    if subject: q["subject"] = subject
-    if chapter: q["chapter"] = chapter
-    if status_f: q["status"] = status_f
-    if exam: q["exam"] = exam
-    if student_class: q["student_class"] = student_class
-    docs = await db.questions.find(q, {"_id": 0}).sort("created_at", 1).to_list(max(1, min(limit, 50000)))
+    """Download the question bank in the same standard Excel format (edit & re-upload).
+    Takes the same filters as /questions/page, so "export what I'm looking at" works."""
+    q = await _with_duplicates(_question_filter(user, **f), duplicates)
+    docs = await _find_sorted(q, sort or "oldest", 0, max(1, min(limit, 50000)))
+    subject = f.get("subject")
     data = build_workbook(docs, with_instructions=True)
     fname = f"FNJEE_Questions_{(subject or 'All').replace(' ', '_')}.xlsx"
     return Response(content=data,
@@ -1475,13 +1655,18 @@ async def parent_assign(inp: ParentAssignIn, user: dict = Depends(require_role('
     parent = await db.users.find_one({"id": user["id"]})
     if inp.child_id not in (parent.get("child_ids") or []):
         raise HTTPException(403, "Not your child")
-    q = {"status": "approved", "subject": {"$in": inp.subjects}, "difficulty": inp.difficulty}
-    docs = await db.questions.find(q, {"_id": 0}).to_list(500)
-    random.shuffle(docs)
-    picked = docs[:inp.num_questions]
+    q = {"status": "approved", "subject": {"$in": inp.subjects}, "personal": {"$ne": True}}
+    if inp.difficulty and inp.difficulty != "any": q["difficulty"] = inp.difficulty
+    if inp.chapters: q["chapter"] = {"$in": inp.chapters}
+    if inp.topics: q["topic"] = {"$in": inp.topics}
+    n = max(1, min(int(inp.num_questions or 10), 200))
+    picked = await db.questions.aggregate([{"$match": q}, {"$sample": {"size": n}}, {"$project": {"_id": 0}}]).to_list(n)
+    if not picked:
+        raise HTTPException(400, "No approved questions for this subject / chapter yet")
     total = sum(d.get("marks", 4) for d in picked)
     t = {"id": new_id(), "title": inp.title, "exam_type": "parent_custom",
-         "description": f"Assigned by parent — {inp.difficulty} level",
+         "description": "Assigned by parent" + (f" — {', '.join(inp.chapters[:3])}" if inp.chapters else "")
+                        + (f" — {inp.difficulty} level" if inp.difficulty and inp.difficulty != "any" else ""),
          "subjects": inp.subjects, "duration_minutes": inp.duration_minutes,
          "total_marks": total, "negative_marking": True, "shuffle_questions": True,
          "shuffle_options": False, "show_solutions_after": True,
@@ -2720,10 +2905,35 @@ async def my_teacher_perms(user: dict = Depends(require_role('teacher'))):
 class PracticeIn(BaseModel):
     subjects: List[str] = []
     chapters: List[str] = []
+    topics: List[str] = []
     difficulty: Optional[str] = None
     count: int = 20
     duration_minutes: Optional[int] = None
     allow_repeat: bool = False
+
+@api.get("/practice/chapters")
+async def practice_chapters(user: dict = Depends(get_current_user)):
+    """Approved questions per subject → class → chapter → topic, for students' and parents'
+    "practice / assign by chapter" pickers. Only chapters that actually have questions are listed."""
+    rows = await db.questions.aggregate([
+        {"$match": {"status": "approved", "personal": {"$ne": True}, "chapter": {"$nin": [None, ""]}}},
+        {"$group": {"_id": {"s": "$subject", "c": "$student_class", "ch": "$chapter", "t": "$topic"}, "n": {"$sum": 1}}},
+    ]).to_list(50000)
+    tree: dict = {}
+    for r in rows:
+        k = r["_id"]; s_, c, ch, t = (str(k.get(x) or "") for x in ("s", "c", "ch", "t"))
+        node = tree.setdefault((s_, ch), {"subject": s_, "chapter": ch, "classes": set(), "count": 0, "topics": {}})
+        node["count"] += r["n"]
+        if c: node["classes"].add(c)
+        if t: node["topics"][t] = node["topics"].get(t, 0) + r["n"]
+    out = []
+    for (s_, ch), node in tree.items():
+        cls = sorted(node["classes"])
+        out.append({"subject": s_, "chapter": ch, "student_class": cls[0] if len(cls) == 1 else "", "count": node["count"],
+                    "topics": [{"name": t, "count": n} for t, n in sorted(node["topics"].items())]})
+    out.sort(key=lambda x: (x["subject"],) + taxonomy.chapter_order(x["subject"], x["student_class"], x["chapter"]))
+    return out
+
 
 @api.post("/practice/generate")
 async def practice_generate(inp: PracticeIn, user: dict = Depends(require_role('student'))):
@@ -2744,7 +2954,9 @@ async def practice_generate(inp: PracticeIn, user: dict = Depends(require_role('
     q: dict = {"status": "approved"}
     if inp.subjects: q["subject"] = {"$in": inp.subjects}
     if inp.chapters: q["chapter"] = {"$in": inp.chapters}
+    if inp.topics: q["topic"] = {"$in": inp.topics}
     if inp.difficulty: q["difficulty"] = inp.difficulty
+    q["personal"] = {"$ne": True}
     if seen_qids: q["id"] = {"$nin": list(seen_qids)}
     docs = await db.questions.find(q, {"_id": 0}).to_list(5000)
     exhausted = False
@@ -4076,6 +4288,121 @@ async def test_ai_settings(user: dict = Depends(require_role('admin'))):
     except Exception as e:
         log.warning(f"AI key test failed: {e}")
         raise HTTPException(502, f"Key test failed: {str(e)[:300]}")
+
+
+# ---------- Google Sheet backup (website → Sheet, on button press) ----------
+import json
+class GSheetSettingsIn(BaseModel):
+    sheet_link: str
+    service_account_json: Optional[str] = None   # omit to keep the saved one
+
+
+def _gsheet_public(cfg: Optional[dict], status: Optional[dict]) -> dict:
+    import gsheet_backup
+    sa_email = None
+    if cfg and cfg.get("sa"):
+        try: sa_email = json.loads(cfg["sa"]).get("client_email")
+        except Exception: sa_email = None
+    st = {k: v for k, v in (status or {}).items() if k not in ("_id", "id")}
+    if st.get("state") == "running" and not gsheet_backup.is_running():
+        st["state"] = "error"; st["error"] = st.get("error") or "Backup beech mein ruk gaya (server restart). Dobara chalaiye."
+    return {"configured": bool(cfg and cfg.get("sa") and cfg.get("sheet_id")),
+            "sheet_id": (cfg or {}).get("sheet_id"),
+            "sheet_url": f"https://docs.google.com/spreadsheets/d/{cfg['sheet_id']}/edit" if cfg and cfg.get("sheet_id") else None,
+            "sheet_title": (cfg or {}).get("sheet_title"),
+            "service_account_email": sa_email, "status": st or None}
+
+
+@api.get("/admin/settings/gsheet")
+async def get_gsheet_settings(user: dict = Depends(require_role('admin'))):
+    cfg = await db.settings.find_one({"id": "gsheet"}, {"_id": 0})
+    st = await db.settings.find_one({"id": "gsheet_status"}, {"_id": 0})
+    return _gsheet_public(cfg, st)
+
+
+@api.put("/admin/settings/gsheet")
+async def save_gsheet_settings(inp: GSheetSettingsIn, user: dict = Depends(require_role('admin'))):
+    import gsheet_backup
+    sheet_id = gsheet_backup.sheet_id_from(inp.sheet_link)
+    if not sheet_id:
+        raise HTTPException(400, "Google Sheet ka link sahi nahi hai (docs.google.com/spreadsheets/d/... wala link daaliye)")
+    old = await db.settings.find_one({"id": "gsheet"}, {"_id": 0}) or {}
+    sa_raw = (inp.service_account_json or "").strip() or old.get("sa")
+    if not sa_raw:
+        raise HTTPException(400, "Service account ki JSON key paste kijiye")
+    try:
+        sa = json.loads(sa_raw)
+        assert sa.get("type") == "service_account" and sa.get("client_email") and sa.get("private_key")
+    except Exception:
+        raise HTTPException(400, "Ye service account JSON key nahi lag rahi (Google Cloud → Service account → Keys → JSON)")
+    try:
+        title = await asyncio.to_thread(gsheet_backup.check_access, sa, sheet_id)
+    except Exception as e:
+        raise HTTPException(400, f"Sheet nahi khul payi. Sheet ko {sa['client_email']} ke saath Editor share kijiye "
+                                 f"aur Google Sheets API enable kijiye. ({str(e)[:200]})")
+    await db.settings.update_one({"id": "gsheet"}, {"$set": {
+        "id": "gsheet", "sa": json.dumps(sa), "sheet_id": sheet_id, "sheet_title": title,
+        "updated_at": now_iso(), "updated_by": user["id"]}}, upsert=True)
+    log.info(f"Google Sheet backup configured by {user['email']} sheet={sheet_id}")
+    st = await db.settings.find_one({"id": "gsheet_status"}, {"_id": 0})
+    return _gsheet_public(await db.settings.find_one({"id": "gsheet"}, {"_id": 0}), st)
+
+
+@api.post("/admin/settings/gsheet/backup")
+async def start_gsheet_backup(user: dict = Depends(require_role('admin'))):
+    import gsheet_backup
+    cfg = await db.settings.find_one({"id": "gsheet"}, {"_id": 0})
+    if not (cfg and cfg.get("sa") and cfg.get("sheet_id")):
+        raise HTTPException(400, "Pehle Google Sheet backup settings save kijiye")
+    if gsheet_backup.is_running():
+        raise HTTPException(409, "Backup pehle se chal raha hai")
+    asyncio.create_task(gsheet_backup.run_backup(db, json.loads(cfg["sa"]), cfg["sheet_id"], user["email"]))
+    await asyncio.sleep(0.3)
+    st = await db.settings.find_one({"id": "gsheet_status"}, {"_id": 0})
+    return _gsheet_public(cfg, st)
+
+
+# ---------- AI Fix: answers for the whole bank + missing-picture check ----------
+
+
+@api.get("/admin/ai-fix")
+async def ai_fix_status(user: dict = Depends(require_role('admin'))):
+    import bank_ai_fix
+    base = {"personal": {"$ne": True}, "status": {"$ne": "archived"}}
+    st = await db.settings.find_one({"id": bank_ai_fix.STATUS_ID}, {"_id": 0}) or None
+    if st and st.get("state") == "running" and not bank_ai_fix.is_running():
+        st["state"] = "stopped"; st["last_error"] = st.get("last_error") or "Server restart ki wajah se ruk gaya. Dobara chalaiye — jahan ruka tha wahin se aage chalega."
+    return {
+        "total": await db.questions.count_documents(base),
+        "missing_answers": await db.questions.count_documents({**base, **_MISSING_ANS}),
+        "picture_missing": await db.questions.count_documents({**base, "tags": "picture-missing"}),
+        "ai_unsure": await db.questions.count_documents({**base, "tags": "ai-unsure"}),
+        "ai_answered_review": await db.questions.count_documents({**base, "answer_origin": "ai_generated", "status": "review"}),
+        "running": bank_ai_fix.is_running(), "status": st}
+
+
+@api.post("/admin/ai-fix/start")
+async def ai_fix_start(payload: dict, user: dict = Depends(require_role('admin'))):
+    import bank_ai_fix
+    if bank_ai_fix.is_running():
+        raise HTTPException(409, "AI Fix pehle se chal raha hai")
+    if not ai_full()["key"]:
+        raise HTTPException(400, "AI key set nahi hai (Admin → AI Settings)")
+    subject = (payload.get("subject") or "").strip() or None
+    task = asyncio.create_task(bank_ai_fix.run(db, user["email"], subject=subject,
+                                               approve=bool(payload.get("approve")),
+                                               retry_unsure=bool(payload.get("retry_unsure")),
+                                               limit=payload.get("limit")))
+    _bg_tasks.add(task); task.add_done_callback(_bg_tasks.discard)
+    await asyncio.sleep(0.3)
+    return await ai_fix_status(user)
+
+
+@api.post("/admin/ai-fix/stop")
+async def ai_fix_stop(user: dict = Depends(require_role('admin'))):
+    import bank_ai_fix
+    bank_ai_fix.request_stop()
+    return {"ok": True}
 
 
 app.include_router(api)

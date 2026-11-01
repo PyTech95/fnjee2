@@ -7,7 +7,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTrigger, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useEffect, useState } from "react";
-import { Moon, Sun, LogOut, Menu, MoreHorizontal } from "lucide-react";
+import { Moon, Sun, LogOut, Menu, MoreHorizontal, ShieldCheck, Trash2 } from "lucide-react";
 
 export default function AppShell({ nav, brandLabel = "FNJEE.com", accent = "admin" }) {
   const { user, logout } = useAuth();
@@ -99,6 +99,13 @@ export default function AppShell({ nav, brandLabel = "FNJEE.com", accent = "admi
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
                   <DropdownMenuLabel>{user?.email}</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem data-testid="privacy-item" onClick={() => navigate("/privacy")}>
+                    <ShieldCheck className="h-4 w-4 mr-2" /> Privacy policy
+                  </DropdownMenuItem>
+                  <DropdownMenuItem data-testid="delete-account-item" className="text-destructive focus:text-destructive" onClick={() => navigate("/delete-account")}>
+                    <Trash2 className="h-4 w-4 mr-2" /> Delete account
+                  </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem data-testid="logout-item" onClick={() => { logout(); navigate("/"); }}>
                     <LogOut className="h-4 w-4 mr-2" /> Log out

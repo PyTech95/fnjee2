@@ -8,13 +8,14 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { toast } from "sonner";
+import ChapterPicker from "@/components/bank/ChapterPicker";
 
 export default function ParentAssign() {
   const { user } = useAuth();
   const [children, setChildren] = useState([]);
   const [form, setForm] = useState({
     title: "Weekend Practice", subjects: ["Physics"], difficulty: "medium",
-    num_questions: 10, duration_minutes: 30, child_id: "",
+    num_questions: 10, duration_minutes: 30, child_id: "", chapters: [], topics: [],
   });
   const [busy, setBusy] = useState(false);
   const [assignedTests, setAssignedTests] = useState([]);
@@ -70,12 +71,20 @@ export default function ParentAssign() {
               ))}
             </div>
           </div>
+          <div>
+            <Label>Chapters (optional)</Label>
+            <div className="mt-2">
+              <ChapterPicker subjects={form.subjects} value={{ chapters: form.chapters, topics: form.topics }}
+                onChange={(v) => setForm((f) => ({ ...f, ...v }))} testId="parent-chapters" />
+            </div>
+          </div>
           <div className="grid grid-cols-3 gap-3">
             <div>
               <Label>Difficulty</Label>
               <Select value={form.difficulty} onValueChange={(v) => upd("difficulty", v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="any">Any</SelectItem>
                   <SelectItem value="easy">Easy</SelectItem>
                   <SelectItem value="medium">Medium</SelectItem>
                   <SelectItem value="hard">Hard</SelectItem>

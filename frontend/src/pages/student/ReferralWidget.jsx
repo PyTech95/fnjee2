@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { shareContent } from "@/lib/native";
 import { api } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -17,11 +18,8 @@ export default function ReferralWidget() {
     catch { toast.error("Copy failed — long-press to copy manually"); }
   };
   const share = async () => {
-    if (navigator.share) {
-      try {
-        await navigator.share({ title: "FNJEE.com", text: "Join me on FNJEE.com — practice NEET/JEE mocks:", url: link });
-      } catch { /* user cancelled */ }
-    } else copy();
+    const ok = await shareContent({ title: "FNJEE.com", text: "Join me on FNJEE.com — practice NEET/JEE mocks:", url: link });
+    if (!ok) copy();
   };
 
   if (!data) return null;

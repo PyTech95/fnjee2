@@ -9,7 +9,42 @@ export const SUBJECTS = ["Physics", "Chemistry", "Mathematics", "Biology"];
 export const EMPTY_FILTERS = {
   subject: "", student_class: "", chapter: "", topic: "",
   difficulty: "", q_type: "", status_f: "", search: "", untagged: false,
+  // "More filters"
+  exam: "", year: "", source: "", tag: "", language: "",
+  answer: "", solution: "", image: "", added: "", duplicates: false, issue: "",
 };
+
+// Labels for the active-filter chips and the "More filters" panel
+export const FILTER_LABELS = {
+  subject: "Subject", student_class: "Class", chapter: "Chapter", topic: "Topic", difficulty: "Level",
+  q_type: "Type", status_f: "Status", search: "Search", exam: "Exam", year: "Year", source: "Source",
+  tag: "Tag", language: "Language", answer: "Answer", solution: "Solution", image: "Picture",
+  added: "Added", duplicates: "Duplicates", untagged: "Missing tags", issue: "Problem",
+};
+export const VALUE_LABELS = {
+  answer: { has: "Has answer", missing: "No answer" },
+  solution: { has: "Has solution", missing: "No solution" },
+  image: { with: "With picture", without: "Without picture" },
+  added: { today: "Today", "7d": "Last 7 days", "30d": "Last 30 days" },
+  issue: {
+    "no-answer": "No answer", "picture-missing": "Picture missing", "ai-unsure": "AI unsure",
+    "ai-answered": "AI answer — check", "options-missing": "Options missing", "answer-review": "Answer needs review",
+  },
+};
+export const SORTS = [
+  ["newest", "Newest first"], ["oldest", "Oldest first"], ["updated", "Recently edited"],
+  ["chapter", "Subject → chapter → topic"], ["difficulty_asc", "Easy → hard"],
+  ["difficulty_desc", "Hard → easy"], ["source", "Source / question no."],
+];
+
+/** Active filters as chips: [{key, label}] (empty values skipped). */
+export function activeChips(filters) {
+  return Object.entries(filters || {}).filter(([, v]) => v && v !== ANY).map(([k, v]) => {
+    const name = FILTER_LABELS[k] || k;
+    let val = v === true ? "" : v === NOT_SET ? "Not set" : (VALUE_LABELS[k]?.[v] || (k === "student_class" ? classLabel(v) : v));
+    return { key: k, label: val ? `${name}: ${val}` : name };
+  });
+}
 
 export const labelOf = (name) => (name ? name : "Not set");
 export const classLabel = (c) => (!c ? "Not set" : /^\d+$/.test(c) ? `Class ${c}` : c);
@@ -18,7 +53,7 @@ export const classLabel = (c) => (!c ? "Not set" : /^\d+$/.test(c) ? `Class ${c}
 export function toParams(filters) {
   const p = {};
   Object.entries(filters || {}).forEach(([k, v]) => {
-    if (k === "untagged") { if (v) p.untagged = true; return; }
+    if (k === "untagged" || k === "duplicates") { if (v) p[k] = true; return; }
     if (v && v !== ANY) p[k] = v;
   });
   return p;
@@ -61,8 +96,19 @@ export function useTaxonomy(params) {
   return { tax, reload };
 }
 
+/** Values + counts for "More filters" (exam, year, source, tag, …). */
+export function useFacets(enabled = true) {
+  const [facets, setFacets] = useState(null);
+  const reload = useCallback(() => {
+    if (!enabled) return;
+    questionsApi.facets().then(setFacets).catch(() => setFacets((f) => f || null));
+  }, [enabled]);
+  useEffect(() => { reload(); }, [reload]);
+  return { facets, reload };
+}
+
 /** One server-side page of the question bank for the given filters. */
-export function useQuestionPage(filters, initialPageSize = 50) {
+export function useQuestionPage(filters, initialPageSize = 50, sort = "newest") {
   const [rows, setRows] = useState([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(initialPageSize);
@@ -70,7 +116,7 @@ export function useQuestionPage(filters, initialPageSize = 50) {
   const [pages, setPages] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const key = JSON.stringify(toParams(filters));
+  const key = JSON.stringify({ ...toParams(filters), ...(sort && sort !== "newest" ? { sort } : {}) });
   const prevKey = useRef(key);
   const reqId = useRef(0);
 

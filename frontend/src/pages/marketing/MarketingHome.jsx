@@ -55,15 +55,15 @@ export default function MarketingHome() {
   useSEO({
     title: "FNJEE.com — NEET 2027 & 2028 Practice Courses, CBT Mocks & Rank Predictor",
     description: "MCQ practice and testing courses for serious NEET aspirants. Real NTA CBT interface, 8L+ MCQs with video solutions, daily DPPs, flashcards, mindmaps, rank predictor.",
-    canonical: "https://hardened-quiz-app.preview.emergentagent.com/",
-    ogImage: "https://hardened-quiz-app.preview.emergentagent.com/og-image.jpg",
+    canonical: "https://fnjee.com/",
+    ogImage: "https://fnjee.com/og-image.jpg",
     jsonLd: [
       {
         "@context": "https://schema.org",
         "@type": "Organization",
         name: "FNJEE.com",
-        url: "https://hardened-quiz-app.preview.emergentagent.com/",
-        logo: "https://hardened-quiz-app.preview.emergentagent.com/icon-512.png",
+        url: "https://fnjee.com/",
+        logo: "https://fnjee.com/icon-512.png",
         description: "AI-powered CBT mock-test platform for JEE, NEET, Olympiads and competitive exams.",
         sameAs: [],
       },
@@ -71,10 +71,10 @@ export default function MarketingHome() {
         "@context": "https://schema.org",
         "@type": "WebSite",
         name: "FNJEE.com",
-        url: "https://hardened-quiz-app.preview.emergentagent.com/",
+        url: "https://fnjee.com/",
         potentialAction: {
           "@type": "SearchAction",
-          target: "https://hardened-quiz-app.preview.emergentagent.com/courses?q={search_term_string}",
+          target: "https://fnjee.com/courses?q={search_term_string}",
           "query-input": "required name=search_term_string",
         },
       },

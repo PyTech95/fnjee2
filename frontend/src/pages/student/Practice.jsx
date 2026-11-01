@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Sparkles, RefreshCw, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
+import ChapterPicker from "@/components/bank/ChapterPicker";
 
 const SUBJECTS = ["Physics", "Chemistry", "Biology", "Mathematics"];
 
@@ -20,6 +21,7 @@ export default function Practice() {
   const [count, setCount] = useState(10);
   const [difficulty, setDifficulty] = useState(["easy", "medium", "hard"].includes(spDiff) ? spDiff : "");
   const [busy, setBusy] = useState(false);
+  const [pick, setPick] = useState({ chapters: [], topics: [] });
 
   const toggleSub = (s) => setSubjects((p) => p.includes(s) ? p.filter((x) => x !== s) : [...p, s]);
 
@@ -27,7 +29,7 @@ export default function Practice() {
     setBusy(true);
     try {
       const t = await practiceApi.generate({
-        subjects, count: Number(count) || 10,
+        subjects, count: Number(count) || 10, chapters: pick.chapters, topics: pick.topics,
         difficulty: difficulty || undefined,
       });
       if (t.exhausted_pool) toast.info("You've seen most questions — some may repeat.");
@@ -57,6 +59,11 @@ export default function Practice() {
               </button>
             ))}
           </div>
+        </div>
+
+        <div>
+          <div className="text-sm font-medium mb-2">Chapters <span className="text-muted-foreground font-normal">(optional — leave empty for a mixed paper)</span></div>
+          <ChapterPicker subjects={subjects} value={pick} onChange={setPick} testId="prac-chapters" />
         </div>
 
         <div className="grid sm:grid-cols-2 gap-4">
