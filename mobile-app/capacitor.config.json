@@ -1,0 +1,45 @@
+{
+  "appId": "com.fnjee.app",
+  "appName": "FNJEE",
+  "webDir": "www",
+  "appendUserAgent": "FNJEE-App",
+  "backgroundColor": "#FFFFFF",
+  "server": {
+    "url": "https://fnjee.com/login",
+    "androidScheme": "https",
+    "errorPath": "index.html",
+    "allowNavigation": [
+      "fnjee.com",
+      "www.fnjee.com",
+      "*.fnjee.com"
+    ]
+  },
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  },
+  "ios": {
+    "contentInset": "never",
+    "scrollEnabled": true,
+    "allowsLinkPreview": false,
+    "limitsNavigationsToAppBoundDomains": false,
+    "preferredContentMode": "mobile"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1500,
+      "launchAutoHide": true,
+      "backgroundColor": "#FAF7F2",
+      "showSpinner": false,
+      "androidScaleType": "CENTER_INSIDE",
+      "splashFullScreen": false,
+      "splashImmersive": false
+    },
+    "SystemBars": {
+      "insetsHandling": "css",
+      "style": "LIGHT",
+      "initialViewportFitValueHint": "cover"
+    }
+  }
+}

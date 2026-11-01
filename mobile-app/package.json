@@ -1,0 +1,26 @@
+{
+  "name": "fnjee-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "description": "FNJEE.com Android + iOS app (Capacitor shell that opens https://fnjee.com)",
+  "scripts": {
+    "android:add": "cap add android && ./prepare-android.sh && cap sync android",
+    "ios:add": "cap add ios && ./prepare-ios.sh && cap sync ios",
+    "sync": "cap sync"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.6.0",
+    "@capacitor/app": "8.1.2",
+    "@capacitor/core": "8.6.0",
+    "@capacitor/haptics": "8.0.2",
+    "@capacitor/ios": "8.6.0",
+    "@capacitor/share": "8.0.3",
+    "@capacitor/splash-screen": "8.0.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.6.0"
+  }
+}

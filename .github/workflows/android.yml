@@ -1,39 +1,50 @@
-name: Android APK
+name: Android app
+
+# Builds the FNJEE Android app (Capacitor shell for https://fnjee.com):
+#  - FNJEE-debug.apk                 install directly on a phone for testing
+#  - FNJEE-release-unsigned.aab/.apk sign locally with your upload key (see mobile-app/README.md)
+#  - FNJEE-release.aab / .apk        signed, only when the ANDROID_* signing secrets are set
+# main → release tag "android-latest";  feature/mobile-* and release/* branches → "android-preview".
 
 on:
   workflow_dispatch:
   pull_request:
     paths:
-      - "android-app/**"
+      - "mobile-app/**"
       - ".github/workflows/android.yml"
   push:
-    branches: [main]
+    branches: [main, "feature/mobile-*", "release/*"]
     paths:
-      - "android-app/**"
+      - "mobile-app/**"
       - ".github/workflows/android.yml"
 
 permissions:
   contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     env:
       HAS_KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+      VERSION_CODE: ${{ github.run_number }}
     defaults:
       run:
-        working-directory: android-app
+        working-directory: mobile-app
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
 
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: 17
+          java-version: 21
 
       - name: Use the runner's Android SDK
         run: |
@@ -44,59 +55,65 @@ jobs:
         run: npm install --no-audit --no-fund
 
       - name: Create Android project
-        env:
-          VERSION_CODE: ${{ github.run_number }}
         run: |
           sudo apt-get install -y imagemagick >/dev/null
           npx cap add android
           ./prepare-android.sh
           npx cap sync android
 
-      - name: Build debug APK (installable directly)
-        working-directory: android-app/android
+      - name: Build debug APK + unsigned release (APK + AAB)
+        working-directory: mobile-app/android
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug
-          cp app/build/outputs/apk/debug/app-debug.apk ../FNJEE.apk
+          ./gradlew --no-daemon assembleDebug assembleRelease bundleRelease
+          mkdir -p ../out
+          cp app/build/outputs/apk/debug/app-debug.apk ../out/FNJEE-debug.apk
+          BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          "$ANDROID_HOME/build-tools/$BT/zipalign" -f -p 4 app/build/outputs/apk/release/app-release-unsigned.apk \
+            ../out/FNJEE-release-unsigned.apk
+          cp app/build/outputs/bundle/release/app-release.aab ../out/FNJEE-release-unsigned.aab
+          # apksigner (pure Java) so the APK can be signed on any computer with Java
+          cp "$ANDROID_HOME/build-tools/$BT/lib/apksigner.jar" ../out/apksigner.jar
+          "$ANDROID_HOME/build-tools/$BT/aapt2" dump badging ../out/FNJEE-debug.apk | head -5 | tee ../out/badging.txt
 
-      - name: Build signed release (only if signing secrets are set)
+      - name: Validate the App Bundle (bundletool)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo google/bundletool --pattern 'bundletool-all-*.jar' --output "$RUNNER_TEMP/bundletool.jar"
+          java -jar "$RUNNER_TEMP/bundletool.jar" validate --bundle=out/FNJEE-release-unsigned.aab | tail -5
+          java -jar "$RUNNER_TEMP/bundletool.jar" dump manifest --bundle=out/FNJEE-release-unsigned.aab > out/aab-manifest.xml
+          grep -E 'versionCode|targetSdkVersion|package=' out/aab-manifest.xml | head -5
+
+      - name: Sign release (only if signing secrets are set)
         if: env.HAS_KS == 'true'
         env:
           KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        working-directory: android-app/android
         run: |
           echo "$KS" | base64 -d > "$RUNNER_TEMP/fnjee.jks"
-          ./gradlew --no-daemon assembleRelease bundleRelease
-          BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
-          "$ANDROID_HOME/build-tools/$BT/zipalign" -f 4 app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
-          "$ANDROID_HOME/build-tools/$BT/apksigner" sign --ks "$RUNNER_TEMP/fnjee.jks" --ks-pass env:KS_PASS \
-            --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASS --out ../FNJEE-release.apk aligned.apk
-          jarsigner -keystore "$RUNNER_TEMP/fnjee.jks" -storepass "$KS_PASS" -keypass "$KEY_PASS" \
-            -signedjar ../FNJEE-release.aab app/build/outputs/bundle/release/app-release.aab "$KEY_ALIAS"
+          java -jar out/apksigner.jar sign --ks "$RUNNER_TEMP/fnjee.jks" --ks-pass env:KS_PASS \
+            --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASS --out out/FNJEE-release.apk out/FNJEE-release-unsigned.apk
+          jarsigner -sigalg SHA256withRSA -digestalg SHA-256 -keystore "$RUNNER_TEMP/fnjee.jks" \
+            -storepass "$KS_PASS" -keypass "$KEY_PASS" -signedjar out/FNJEE-release.aab out/FNJEE-release-unsigned.aab "$KEY_ALIAS"
+          rm -f "$RUNNER_TEMP/fnjee.jks"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: fnjee-android-apk
-          path: |
-            android-app/FNJEE.apk
-            android-app/FNJEE-release.apk
-            android-app/FNJEE-release.aab
-          if-no-files-found: ignore
+          name: fnjee-android
+          path: mobile-app/out/*
+          if-no-files-found: error
 
-      - name: Publish to Releases (tag android-latest)
-        if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: android-latest
-          name: FNJEE Android app (latest)
-          body: "Download **FNJEE.apk** below and install it on your Android phone. Build #${{ github.run_number }}."
-          prerelease: false
-          make_latest: true
-          files: |
-            android-app/FNJEE.apk
-            android-app/FNJEE-release.apk
-            android-app/FNJEE-release.aab
-          fail_on_unmatched_files: false
+      - name: Publish to GitHub Releases
+        if: github.event_name != 'pull_request'
+        working-directory: mobile-app
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then TAG=android-latest; PRE=""; else TAG=android-preview; PRE="--prerelease"; fi
+          gh release delete "$TAG" --cleanup-tag -y || true
+          gh release create "$TAG" $PRE --target "$GITHUB_SHA" --title "FNJEE Android app — build ${VERSION_CODE} (${GITHUB_REF_NAME})" \
+            --notes "Build #${VERSION_CODE} from ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. FNJEE-debug.apk installs directly on a phone. For Google Play upload the signed .aab." \
+            out/*
