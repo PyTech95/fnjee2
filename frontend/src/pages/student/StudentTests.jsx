@@ -51,7 +51,7 @@ export default function StudentTests() {
                   </div>
                 </div>
               </div>
-              <div className="mt-4 flex items-center justify-between gap-2">
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
                 {past ? (
                   <>
                     <div className="text-sm">
@@ -65,7 +65,7 @@ export default function StudentTests() {
                         </div>
                       )}
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <Link to={`/student/results/${best.id}`}><Button data-testid={`view-result-${t.id}`} variant="outline" className="rounded-full"><CheckCircle2 className="h-4 w-4 mr-2" />Result</Button></Link>
                       <Link to={`/student/exam/${t.id}?retake=1`}><Button data-testid={`retake-${t.id}`} className="rounded-full">Retake · 1 pass</Button></Link>
                     </div>

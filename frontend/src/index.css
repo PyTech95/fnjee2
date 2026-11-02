@@ -183,3 +183,11 @@ h1, h2, h3, h4, h5, h6, .font-display {
   padding-top: env(safe-area-inset-top);
   padding-bottom: env(safe-area-inset-bottom);
 }
+
+/* Phones: a grid track must never grow wider than the screen because one child has wide content
+   (chip rows, long words, side-by-side buttons). Children shrink and wrap instead. */
+.grid > * { min-width: 0; }
+/* Long unbroken text (emails, URLs, codes) wraps instead of pushing the layout sideways. */
+.break-anywhere { overflow-wrap: anywhere; }
+/* Admin tables scroll sideways on phones instead of squeezing names letter by letter. */
+[data-testid="admin-users-page"] table, [data-testid="proctoring-dashboard"] table { white-space: nowrap; }

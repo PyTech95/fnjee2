@@ -64,11 +64,11 @@ export default function Rewards() {
           <div className="relative">
             <div className="text-xs text-muted-foreground uppercase tracking-widest">Your referral code</div>
             <div className="flex items-center gap-3 mt-2">
-              <div className="font-display font-bold text-3xl tracking-widest">{r?.referral_code}</div>
+              <div className="font-display font-bold text-2xl sm:text-3xl tracking-wider sm:tracking-widest break-all">{r?.referral_code}</div>
               <Button data-testid="copy-referral" size="icon" variant="outline" className="rounded-full" onClick={copy}><Copy className="h-4 w-4" /></Button>
             </div>
             <p className="text-sm text-muted-foreground mt-3 max-w-md">Every friend who signs up with your code earns you <b>100 coins</b>. Unlock badges, premium mock tests, and mentorship sessions.</p>
-            <div className="mt-6 grid grid-cols-3 gap-3 max-w-lg">
+            <div className="mt-6 grid grid-cols-3 gap-2 sm:gap-3 max-w-lg">
               <StatChip label="Coins" value={r?.coins || 0} />
               <StatChip label="Streak" value={`${r?.streak || 0}d`} />
               <StatChip label="Referrals" value={r?.referrals || 0} />
@@ -180,9 +180,9 @@ export default function Rewards() {
 
 function StatChip({ label, value }) {
   return (
-    <div className="rounded-xl bg-card border border-border p-3">
-      <div className="text-xs text-muted-foreground uppercase tracking-widest">{label}</div>
-      <div className="font-display font-bold text-2xl mt-1">{value}</div>
+    <div className="rounded-xl bg-card border border-border p-2.5 sm:p-3 min-w-0">
+      <div className="text-[10px] sm:text-xs text-muted-foreground uppercase tracking-wide sm:tracking-widest truncate">{label}</div>
+      <div className="font-display font-bold text-xl sm:text-2xl mt-1 truncate">{value}</div>
     </div>
   );
 }

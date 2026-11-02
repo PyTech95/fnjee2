@@ -165,3 +165,31 @@ def test_practice_chapters_and_parent_assign_by_chapter(app_client):
         assert r.status_code == 200, r.text
         assert r.json()["question_ids"] == ["q1"]
     asyncio.run(run())
+
+
+def test_signup_cannot_create_admin_and_admin_can(app_client):
+    server, client = app_client
+
+    async def run():
+        server.app.dependency_overrides.clear()
+        r = await client.post("/api/auth/signup", json={"name": "X", "email": "x@x.com", "password": "secret123", "role": "admin"})
+        assert r.status_code == 403
+        r = await client.post("/api/auth/signup", json={"name": "T", "email": "t@x.com", "password": "secret123", "role": "teacher"})
+        assert r.status_code == 403
+        r = await client.post("/api/auth/signup", json={"name": "S", "email": "s2@x.com", "password": "short", "role": "student"})
+        assert r.status_code == 400
+        r = await client.post("/api/auth/signup", json={"name": " Stu ", "email": "s3@x.com", "password": "secret123", "role": "student"})
+        assert r.status_code == 200 and r.json()["user"]["role"] == "student" and r.json()["user"]["name"] == "Stu"
+        assert await server.db.users.count_documents({"role": "admin"}) == 0
+
+        admin = {"id": "admin-1", "role": "admin", "email": "a@x.com", "name": "Admin"}
+
+        async def _admin():
+            return admin
+        server.app.dependency_overrides[server.get_current_user] = _admin
+        r = await client.post("/api/admin/users", json={"name": "Teacher One", "email": "T1@x.com", "password": "secret123", "role": "teacher"})
+        assert r.status_code == 200, r.text
+        assert r.json()["role"] == "teacher" and "password" not in r.json()
+        d = await server.db.users.find_one({"email": "t1@x.com"})
+        assert d and server.check_pw("secret123", d["password"])
+    asyncio.run(run())

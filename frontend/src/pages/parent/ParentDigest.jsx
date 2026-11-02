@@ -78,7 +78,7 @@ export default function ParentDigest() {
             <p className="text-lg mt-6 leading-relaxed">{digest.message}</p>
 
             {/* Stat row */}
-            <div className="grid grid-cols-3 gap-4 mt-6">
+            <div className="grid grid-cols-3 gap-2 sm:gap-4 mt-6">
               <Stat label="Mocks this week" value={digest.week_attempts} />
               <Stat label="Avg score" value={`${digest.week_avg_pct}%`} />
               <Stat label="Vs last weeks" value={`${digest.delta_pct >= 0 ? "+" : ""}${digest.delta_pct}pp`} icon={TrendIcon} tint={trendColor} />
@@ -116,10 +116,10 @@ export default function ParentDigest() {
 
 function Stat({ label, value, icon: Icon, tint }) {
   return (
-    <div className="p-4 rounded-xl border border-border">
-      <div className="text-xs text-muted-foreground uppercase tracking-widest">{label}</div>
-      <div className={`font-display font-bold text-2xl mt-1 flex items-center gap-1 ${tint || ""}`}>
-        {Icon && <Icon className="h-5 w-5" />}
+    <div className="p-2.5 sm:p-4 rounded-xl border border-border min-w-0">
+      <div className="text-[10px] sm:text-xs text-muted-foreground uppercase tracking-wide sm:tracking-widest leading-tight">{label}</div>
+      <div className={`font-display font-bold text-[15px] sm:text-2xl mt-1 flex items-center gap-1 whitespace-nowrap ${tint || ""}`}>
+        {Icon && <Icon className="hidden sm:block h-5 w-5 shrink-0" />}
         {value}
       </div>
     </div>

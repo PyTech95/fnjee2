@@ -129,17 +129,17 @@ export default function Leaderboard() {
               return (
                 <div key={r.user.id}
                   data-testid={`leaderboard-row-${r.rank}`}
-                  className={`flex items-center justify-between p-3 rounded-xl transition-colors ${mine ? "bg-primary/10 ring-1 ring-primary/30" : "bg-muted/40 hover:bg-muted/70"}`}>
+                  className={`flex items-center justify-between gap-2 p-3 rounded-xl transition-colors ${mine ? "bg-primary/10 ring-1 ring-primary/30" : "bg-muted/40 hover:bg-muted/70"}`}>
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="h-9 w-9 rounded-lg grid place-items-center bg-background border border-border font-display font-bold text-sm tabular-nums">#{r.rank}</div>
+                    <div className="h-9 w-9 shrink-0 rounded-lg grid place-items-center bg-background border border-border font-display font-bold text-sm tabular-nums">#{r.rank}</div>
                     <div className="min-w-0">
-                      <div className="font-medium text-sm truncate flex items-center gap-1.5">
-                        {r.user.name}
+                      <div className="font-medium text-sm flex items-center gap-1.5 min-w-0">
+                        <span className="truncate">{r.user.name}</span>
                         {r.user.pinned_badge && (() => { const BI = BADGE_ICONS[r.user.pinned_badge_icon] || Sparkles; return (
                           <span title={r.user.pinned_badge} className="inline-flex items-center gap-0.5 rounded-full bg-accent/15 text-accent px-1.5 py-0.5 text-[10px] font-semibold shrink-0" data-testid="leaderboard-pinned-badge">
                             <BI className="h-3 w-3" />{r.user.pinned_badge}
                           </span>); })()}
-                        {mine && <span className="text-primary"> · You</span>}
+                        {mine && <span className="text-primary shrink-0">· You</span>}
                       </div>
                       {isTest ? (
                         <div className="text-xs text-muted-foreground">{r.correct}✓ · {r.wrong}✗{r.time_taken_seconds ? ` · ${Math.round(r.time_taken_seconds / 60)}m` : ""}</div>
@@ -148,7 +148,7 @@ export default function Leaderboard() {
                       )}
                     </div>
                   </div>
-                  <Badge variant={mine ? "default" : "secondary"} className="rounded-full tabular-nums">{r.score} {isTest ? "pts" : "coins"}</Badge>
+                  <Badge variant={mine ? "default" : "secondary"} className="rounded-full tabular-nums shrink-0 whitespace-nowrap">{r.score} {isTest ? "pts" : "coins"}</Badge>
                 </div>
               );
             })}

@@ -69,7 +69,7 @@ export default function DPP() {
                       key={s}
                       data-testid={`dpp-subject-${s.toLowerCase()}`}
                       onClick={() => setSubjects(on ? subjects.filter((x) => x !== s) : [...subjects, s])}
-                      className={`px-4 py-3 rounded-xl border text-sm font-medium transition-colors duration-200 ${
+                      className={`px-2 sm:px-4 py-3 rounded-xl border text-xs sm:text-sm font-medium truncate transition-colors duration-200 ${
                         on ? "border-primary bg-primary/10 text-primary" : "border-border hover:border-primary/40"
                       }`}
                     >
@@ -91,7 +91,7 @@ export default function DPP() {
 
             <div>
               <Label className="text-sm font-semibold">Difficulty (optional)</Label>
-              <div className="mt-3 flex gap-2">
+              <div className="mt-3 flex flex-wrap gap-2">
                 {[{v: "", l: "Mixed"}, {v: "easy", l: "Easy"}, {v: "medium", l: "Medium"}, {v: "hard", l: "Hard"}].map((d) => (
                   <button
                     key={d.v}
