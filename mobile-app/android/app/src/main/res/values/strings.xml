@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">FNJEE</string>
+    <string name="title_activity_main">FNJEE</string>
+    <string name="package_name">com.fnjee.app</string>
+    <string name="custom_url_scheme">com.fnjee.app</string>
+</resources>

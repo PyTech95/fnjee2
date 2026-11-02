@@ -46,5 +46,6 @@ done
 VN=$(node -p "require('./package.json').version")
 VC=${VERSION_CODE:-1}
 sed -i -E "s/versionCode [0-9]+/versionCode $VC/; s/versionName \"[^\"]+\"/versionName \"$VN\"/" android/app/build.gradle
+sed -i -E "s/^def fnjeeVersionCode = [0-9]+/def fnjeeVersionCode = $VC/; s/^def fnjeeVersionName = \"[^\"]+\"/def fnjeeVersionName = \"$VN\"/" android/app/build.gradle
 echo "prepared android: versionName $VN, versionCode $VC"
 grep -E "versionCode|versionName|targetSdk|compileSdk|minSdk" android/app/build.gradle android/variables.gradle || true
