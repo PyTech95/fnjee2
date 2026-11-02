@@ -78,8 +78,8 @@ export default function ParentAssign() {
                 onChange={(v) => setForm((f) => ({ ...f, ...v }))} testId="parent-chapters" />
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-3">
-            <div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <div className="col-span-2 sm:col-span-1">
               <Label>Difficulty</Label>
               <Select value={form.difficulty} onValueChange={(v) => upd("difficulty", v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>

@@ -98,8 +98,8 @@ export default function StudentProfile() {
           </div>
           <Switch data-testid="toggle-email-results" checked={emailOn} disabled={saving} onCheckedChange={toggleEmail} />
         </div>
-        <div className="flex items-center justify-between gap-4 mt-5 pt-5 border-t border-border">
-          <div className="flex items-start gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 sm:gap-4 mt-5 pt-5 border-t border-border">
+          <div className="flex items-start gap-3 min-w-0 flex-1 basis-56">
             <div className="h-10 w-10 rounded-xl grid place-items-center bg-accent/15 text-accent shrink-0"><Clock className="h-5 w-5" /></div>
             <div>
               <div className="font-medium">Streak reminder time</div>
@@ -107,7 +107,7 @@ export default function StudentProfile() {
             </div>
           </div>
           <Select value={reminderHour} onValueChange={saveReminderHour} disabled={saving}>
-            <SelectTrigger data-testid="reminder-hour-select" className="w-32 rounded-full"><SelectValue /></SelectTrigger>
+            <SelectTrigger data-testid="reminder-hour-select" className="w-36 rounded-full ml-[52px] sm:ml-0"><SelectValue /></SelectTrigger>
             <SelectContent>
               {HOURS.map((h) => <SelectItem key={h} value={String(h)}>{fmtHour(h)}</SelectItem>)}
             </SelectContent>

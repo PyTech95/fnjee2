@@ -242,12 +242,20 @@ class AnnouncementIn(BaseModel):
 
 
 @api.post("/auth/signup")
-async def signup(inp: SignupIn):
+async def signup(inp: SignupIn, request: Request):
+    # Public sign-up is only for students and parents. Admin / teacher accounts are created by an admin.
+    if inp.role not in ("student", "parent"):
+        raise HTTPException(403, "Admin and teacher accounts can't be created by sign-up. Ask your institute admin.")
+    await rate_limit(f"signup:{client_ip(request)}", limit=10, window_seconds=600)
+    if len(inp.password or "") < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    if not (inp.name or "").strip():
+        raise HTTPException(400, "Please enter your name")
     if await db.users.find_one({"email": inp.email.lower()}):
         raise HTTPException(400, "Email already registered")
     uid = new_id()
     doc = {
-        "id": uid, "name": inp.name, "email": inp.email.lower(),
+        "id": uid, "name": inp.name.strip()[:80], "email": inp.email.lower(),
         "password": hash_pw(inp.password), "role": inp.role, "created_at": now_iso(),
         "referral_code": gen_referral(), "referred_by": None,
         "reward_coins": 0, "streak_days": 0, "last_active": now_iso(),
@@ -376,6 +384,36 @@ async def get_user(uid: str, user: dict = Depends(get_current_user)):
     u = await db.users.find_one({"id": uid}, {"_id": 0, "password": 0})
     if not u: raise HTTPException(404, "Not found")
     return u
+
+
+class AdminCreateUserIn(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+    role: Literal['student', 'parent', 'admin', 'teacher'] = 'teacher'
+
+
+@api.post("/admin/users")
+async def admin_create_user(inp: AdminCreateUserIn, user: dict = Depends(require_role('admin'))):
+    """Admins create teacher / admin (or student / parent) accounts — public sign-up can't."""
+    if len(inp.password or "") < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    if not inp.name.strip():
+        raise HTTPException(400, "Name is required")
+    email = inp.email.lower()
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(400, "Email already registered")
+    doc = {
+        "id": new_id(), "name": inp.name.strip()[:80], "email": email, "password": hash_pw(inp.password),
+        "role": inp.role, "created_at": now_iso(), "created_by": user["id"], "referral_code": gen_referral(),
+        "referred_by": None, "reward_coins": 0, "streak_days": 0, "last_active": None,
+        "exam_target": "JEE" if inp.role == "student" else None, "child_ids": [], "parent_ids": [],
+        "email_results_enabled": True, "reminder_hour": 19, "earned_badges": [],
+        "avatar": f"https://api.dicebear.com/7.x/initials/svg?seed={inp.name.strip()[:40]}",
+    }
+    await db.users.insert_one(doc)
+    log.info(f"admin {user.get('email')} created a {inp.role} account")
+    return {k: v for k, v in doc.items() if k not in ("password", "_id")}
 
 
 @api.post("/admin/users/purge")

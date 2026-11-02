@@ -12,7 +12,10 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Trash2, AlertTriangle } from "lucide-react";
+import { Trash2, AlertTriangle, UserPlus } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 
 export default function AdminStudents() {
   const [role, setRole] = useState("student");
@@ -22,6 +25,22 @@ export default function AdminStudents() {
   const [typed, setTyped] = useState("");
   const [purging, setPurging] = useState(false);
   const { toast } = useToast();
+  const [adding, setAdding] = useState(false);
+  const [nu, setNu] = useState({ name: "", email: "", password: "", role: "teacher" });
+  const [saving, setSaving] = useState(false);
+  const createUser = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      const u = await usersApi.create(nu);
+      toast({ title: "Account created", description: `${u.name} (${u.role}) can now sign in with ${u.email}.` });
+      setAdding(false); setNu({ name: "", email: "", password: "", role: "teacher" });
+      if (u.role === role) load(); else setRole(u.role);
+    } catch (err) {
+      const d = err?.response?.data?.detail;
+      toast({ title: "Could not create the account", description: typeof d === "string" ? d : "Check the details", variant: "destructive" });
+    } finally { setSaving(false); }
+  };
 
   const load = () => usersApi.list(role).then(setRows);
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [role]);
@@ -45,16 +64,22 @@ export default function AdminStudents() {
           <div className="text-xs font-bold uppercase tracking-[0.2em] text-primary">People</div>
           <h1 className="font-display font-bold text-3xl tracking-tight mt-1">Users</h1>
         </div>
-        <Button data-testid="delete-all-users-btn" variant="destructive" className="rounded-full"
-          onClick={() => setConfirm1(true)}>
-          <Trash2 className="h-4 w-4 mr-2" /> Delete all users
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button data-testid="add-user-btn" className="rounded-full" onClick={() => setAdding(true)}>
+            <UserPlus className="h-4 w-4 mr-2" /> Add user
+          </Button>
+          <Button data-testid="delete-all-users-btn" variant="destructive" className="rounded-full"
+            onClick={() => setConfirm1(true)}>
+            <Trash2 className="h-4 w-4 mr-2" /> Delete all users
+          </Button>
+        </div>
       </div>
 
       <Tabs value={role} onValueChange={setRole}>
         <TabsList className="rounded-full">
           <TabsTrigger value="student" className="rounded-full">Students</TabsTrigger>
           <TabsTrigger value="parent" className="rounded-full">Parents</TabsTrigger>
+          <TabsTrigger value="teacher" className="rounded-full">Teachers</TabsTrigger>
           <TabsTrigger value="admin" className="rounded-full">Admins</TabsTrigger>
         </TabsList>
       </Tabs>
@@ -93,6 +118,36 @@ export default function AdminStudents() {
       </Card>
 
       {/* First confirmation */}
+      <Dialog open={adding} onOpenChange={setAdding}>
+        <DialogContent className="max-w-md" data-testid="add-user-dialog">
+          <DialogHeader>
+            <DialogTitle>Add user</DialogTitle>
+            <DialogDescription>Teacher and admin accounts can only be created here (public sign-up is for students and parents).</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={createUser} className="space-y-3">
+            <div className="space-y-1.5"><Label>Role</Label>
+              <Select value={nu.role} onValueChange={(v) => setNu({ ...nu, role: v })}>
+                <SelectTrigger data-testid="add-user-role"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="teacher">Teacher</SelectItem><SelectItem value="admin">Admin</SelectItem>
+                  <SelectItem value="student">Student</SelectItem><SelectItem value="parent">Parent</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5"><Label>Full name</Label>
+              <Input required value={nu.name} onChange={(e) => setNu({ ...nu, name: e.target.value })} data-testid="add-user-name" /></div>
+            <div className="space-y-1.5"><Label>Email</Label>
+              <Input required type="email" autoCapitalize="none" value={nu.email} onChange={(e) => setNu({ ...nu, email: e.target.value })} data-testid="add-user-email" /></div>
+            <div className="space-y-1.5"><Label>Password (min 8)</Label>
+              <Input required minLength={8} type="text" autoComplete="new-password" value={nu.password} onChange={(e) => setNu({ ...nu, password: e.target.value })} data-testid="add-user-password" /></div>
+            <DialogFooter className="gap-2">
+              <Button type="button" variant="ghost" onClick={() => setAdding(false)}>Cancel</Button>
+              <Button type="submit" disabled={saving} data-testid="add-user-save">{saving ? "Creating…" : "Create account"}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
       <AlertDialog open={confirm1} onOpenChange={setConfirm1}>
         <AlertDialogContent data-testid="purge-confirm-1">
           <AlertDialogHeader>

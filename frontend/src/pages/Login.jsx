@@ -68,11 +68,11 @@ export default function Login() {
             <p className="text-sm text-muted-foreground mt-1">Choose your role to sign in.</p>
           </div>
           <Tabs value={role} onValueChange={setRole}>
-            <TabsList data-testid="login-role-tabs" className="grid grid-cols-4 rounded-full h-auto p-1">
-              <TabsTrigger data-testid="tab-student" value="student" className="rounded-full">Student</TabsTrigger>
-              <TabsTrigger data-testid="tab-teacher" value="teacher" className="rounded-full">Teacher</TabsTrigger>
-              <TabsTrigger data-testid="tab-parent" value="parent" className="rounded-full">Parent</TabsTrigger>
-              <TabsTrigger data-testid="tab-admin" value="admin" className="rounded-full">Admin</TabsTrigger>
+            <TabsList data-testid="login-role-tabs" className="grid w-full grid-cols-4 rounded-full h-auto p-1">
+              <TabsTrigger data-testid="tab-student" value="student" className="rounded-full px-1 py-1.5 text-xs sm:text-sm sm:px-3">Student</TabsTrigger>
+              <TabsTrigger data-testid="tab-teacher" value="teacher" className="rounded-full px-1 py-1.5 text-xs sm:text-sm sm:px-3">Teacher</TabsTrigger>
+              <TabsTrigger data-testid="tab-parent" value="parent" className="rounded-full px-1 py-1.5 text-xs sm:text-sm sm:px-3">Parent</TabsTrigger>
+              <TabsTrigger data-testid="tab-admin" value="admin" className="rounded-full px-1 py-1.5 text-xs sm:text-sm sm:px-3">Admin</TabsTrigger>
             </TabsList>
             <TabsContent value={role} className="mt-6">
               <form onSubmit={submit} className="space-y-4">

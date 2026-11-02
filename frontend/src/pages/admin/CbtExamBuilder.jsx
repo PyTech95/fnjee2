@@ -153,7 +153,7 @@ export default function CbtExamBuilder() {
 
   return (
     <div data-testid="cbt-builder-page" className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="text-xs font-bold uppercase tracking-[0.2em] text-primary">CBT</div>
           <h1 className="font-display font-bold text-3xl tracking-tight mt-1">{testId ? "Edit CBT exam" : "New CBT exam"}</h1>
@@ -180,9 +180,9 @@ export default function CbtExamBuilder() {
 
           {/* structure */}
           <Card className="en-card p-6 space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="font-display font-semibold text-lg flex items-center gap-2"><Layers className="h-4 w-4" /> Subjects &amp; Sections</h3>
-              <div className="flex gap-1.5">
+              <div className="flex flex-wrap gap-1.5">
                 {ALL_SUBJECTS.map((s) => (
                   <Button key={s} type="button" variant="outline" size="sm" className="rounded-full" data-testid={`cbt-add-subject-${s}`} onClick={() => addSubject(s)} disabled={subjects.some((x) => x.name === s)}>+ {s}</Button>
                 ))}
@@ -201,8 +201,8 @@ export default function CbtExamBuilder() {
                   const isTarget = target.s === si && target.sec === seci;
                   return (
                     <div key={seci} className={`rounded-lg border p-3 ${isTarget ? "border-primary bg-primary/5" : "border-slate-200"}`}>
-                      <div className="flex items-center gap-2 mb-2">
-                        <Input value={sec.name} onChange={(e) => renameSection(si, seci, e.target.value)} className="h-8 max-w-[180px]" data-testid={`cbt-section-name-${si}-${seci}`} />
+                      <div className="flex flex-wrap items-center gap-2 mb-2">
+                        <Input value={sec.name} onChange={(e) => renameSection(si, seci, e.target.value)} className="h-8 flex-1 min-w-[120px] sm:flex-none sm:w-[180px]" data-testid={`cbt-section-name-${si}-${seci}`} />
                         <span className="text-xs text-slate-500">{sec.question_ids.length} question(s)</span>
                         <div className="ml-auto flex gap-1">
                           <Button type="button" variant={isTarget ? "default" : "outline"} size="sm" onClick={() => setTarget({ s: si, sec: seci })} data-testid={`cbt-target-${si}-${seci}`}>

@@ -119,7 +119,7 @@ export default function Flashcards() {
             </div>
           </div>
 
-          <div className="mt-6 flex items-center gap-2">
+          <div className="mt-6 flex flex-wrap items-center gap-2">
             <Button data-testid="flashcards-prev" variant="outline" className="rounded-full" onClick={prev} disabled={!cards.length}>
               <ArrowLeft className="h-4 w-4" />
             </Button>
@@ -129,7 +129,7 @@ export default function Flashcards() {
             <Button data-testid="flashcards-shuffle" variant="ghost" className="rounded-full" onClick={shuffle} disabled={!cards.length}>
               <Shuffle className="h-4 w-4 mr-1" /> Shuffle
             </Button>
-            <div className="ml-auto text-sm text-muted-foreground flex items-center gap-2">
+            <div className="ml-auto text-sm text-muted-foreground flex items-center gap-2 whitespace-nowrap">
               <BookMarked className="h-4 w-4" /> {cards.length} cards in this chapter
             </div>
           </div>
