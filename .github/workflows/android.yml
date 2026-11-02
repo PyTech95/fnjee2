@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       HAS_KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
-      VERSION_CODE: ${{ github.run_number }}
+      VERSION_CODE: ${{ github.run_number }}   # only used when android/ is generated in CI
     defaults:
       run:
         working-directory: mobile-app
@@ -54,12 +54,18 @@ jobs:
       - name: Install Capacitor
         run: npm install --no-audit --no-fund
 
-      - name: Create Android project
+      - name: Prepare Android project
         run: |
-          sudo apt-get install -y imagemagick >/dev/null
-          npx cap add android
-          ./prepare-android.sh
-          npx cap sync android
+          if [ -d android/app ]; then
+            # committed project (mobile-app/android): version comes from android/app/build.gradle
+            npx cap sync android
+          else
+            sudo apt-get install -y imagemagick >/dev/null
+            npx cap add android
+            ./prepare-android.sh
+            npx cap sync android
+          fi
+          grep -E "fnjeeVersion(Code|Name) =" android/app/build.gradle || true
 
       - name: Build debug APK + unsigned release (APK + AAB)
         working-directory: mobile-app/android

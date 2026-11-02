@@ -62,11 +62,33 @@ Needs an Apple Developer account (₹ 8,700 / year).
     npx cap add ios --packagemanager SPM && ./prepare-ios.sh && npx cap sync ios
     npx cap open ios      # Xcode: Signing → choose your team → Product → Archive → Distribute App
 
-## Local Android build (Android Studio)
+## Local Android build (Windows / Mac, Android Studio)
 
-    cd mobile-app && npm install
-    npx cap add android && ./prepare-android.sh && npx cap sync android
-    npx cap open android
+The native project is in `mobile-app/android` (committed). One-time setup:
+
+1. Install **Android Studio** (latest; it includes JDK 21 and the Android SDK — install SDK Platform **36**).
+2. Install **Node.js 22+**, then in `mobile-app`: `npm install` and `npx cap sync android`
+   (skip this if you got the ready-made zip — it already contains what Gradle needs).
+3. Put the upload key next to the project, e.g. `C:/FNJEE-keys/fnjee-upload.jks`, copy
+   `android/keystore.properties.example` → `android/keystore.properties` and fill in the path + passwords.
+
+Every release:
+
+1. Open `android/app/build.gradle` → change `fnjeeVersionCode` (+1 every upload) and `fnjeeVersionName`.
+2. In `mobile-app/android` run
+
+       gradlew.bat clean bundleRelease assembleRelease        (Windows)
+       ./gradlew clean bundleRelease assembleRelease          (Mac / Linux)
+
+   or in Android Studio: **Build → Generate Signed App Bundle or APK**.
+3. Outputs
+   * `android/app/build/outputs/apk/release/app-release.apk` → copy to a phone and install to test
+   * `android/app/build/outputs/bundle/release/app-release.aab` → upload to Play Console
+4. Test APK and Play Store app have different signatures (Google re-signs Play builds): uninstall the test APK before
+   installing from the Play Store.
+
+Changing app name / icon / permissions later: edit `capacitor.config.json` or `resources/`, then
+`npx cap sync android` (or delete `android/` and run `npm run android:add` to regenerate it).
 
 ## Files
 
