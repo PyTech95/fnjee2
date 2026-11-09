@@ -112,7 +112,7 @@ export default function Result() {
     try {
       const t = await wrongRetestApi.create(attempt.id);
       toast.success("Wrong-only drill ready — go!");
-      window.location.href = `/student/exam/${t.id}`;
+      window.location.href = `/student/cbt/${t.id}`;
     } catch (e) { toast.error(e?.response?.data?.detail || "Could not build drill"); }
   };
 

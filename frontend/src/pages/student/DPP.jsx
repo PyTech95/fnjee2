@@ -128,7 +128,7 @@ export default function DPP() {
                 {busy ? "Building…" : today?.exists ? "Regenerate today's set" : "Generate today's DPP"}
               </Button>
               {today?.exists && (
-                <Link to={`/student/exam/${today.test_id}`}>
+                <Link to={`/student/cbt/${today.test_id}`}>
                   <Button data-testid="dpp-start-btn" variant="outline" className="rounded-full">Start now <ChevronRight className="h-4 w-4 ml-1" /></Button>
                 </Link>
               )}
@@ -175,7 +175,7 @@ export default function DPP() {
                 · {today.count} questions
               </div>
             </div>
-            <Link to={`/student/exam/${today.test_id}`}>
+            <Link to={`/student/cbt/${today.test_id}`}>
               <Button data-testid="dpp-open-exam" className="rounded-full">Open CBT</Button>
             </Link>
           </div>
@@ -186,7 +186,7 @@ export default function DPP() {
         <div className="font-display font-semibold text-lg mb-3">DPP history</div>
         <div className="space-y-2 text-sm">
           {history.map((h) => (
-            <Link key={h.id} to={`/student/exam/${h.test_id}`}
+            <Link key={h.id} to={`/student/cbt/${h.test_id}`}
               className="flex justify-between items-center p-3 rounded-lg border border-border hover:border-primary/40 transition-colors duration-200"
               data-testid={`dpp-history-${h.date}`}>
               <div>

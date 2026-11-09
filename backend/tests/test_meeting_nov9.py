@@ -163,3 +163,17 @@ def test_student_chapter_lists_flashcards_and_courses(env):
         targets = {c["target"] for c in (await as_(STUDENT).get("/api/courses")).json()}
         assert {"JEE 2027", "JEE 2028", "NEET 2027"} <= targets
     asyncio.run(run())
+
+
+def test_login_role_tab_is_only_a_hint(env):
+    server, as_ = env
+
+    async def run():
+        await server.db.users.insert_one(dict(STUDENT, password=server.hash_pw("Secret@123")))
+        c = as_(ADMIN)
+        # wrong tab → signs in to the real (student) account, never as admin
+        r = await c.post("/api/auth/login", json={"email": "S@x.com", "password": "Secret@123", "role": "admin"})
+        assert r.status_code == 200 and r.json()["user"]["role"] == "student"
+        r = await c.post("/api/auth/login", json={"email": "s@x.com", "password": "nope", "role": "student"})
+        assert r.status_code == 401
+    asyncio.run(run())

@@ -290,9 +290,18 @@ async def signup(inp: SignupIn, request: Request):
 @api.post("/auth/login")
 async def login(inp: LoginIn, request: Request):
     await rate_limit(f"login:{client_ip(request)}", limit=10, window_seconds=60)
-    u = await db.users.find_one({"email": inp.email.lower(), "role": inp.role})
+    email = inp.email.strip().lower()
+    u = await db.users.find_one({"email": email, "role": inp.role})
     if not u or not check_pw(inp.password, u["password"]):
-        raise HTTPException(401, "Invalid credentials or wrong role")
+        # The role tab is only a hint (meeting 9 Nov: "student login not working" when the wrong tab was
+        # selected) — sign in to whichever account of this email the password belongs to.
+        u = None
+        async for cand in db.users.find({"email": email}):
+            if cand.get("password") and check_pw(inp.password, cand["password"]):
+                u = cand
+                break
+    if not u:
+        raise HTTPException(401, "Wrong email or password")
     await db.users.update_one({"id": u["id"]}, {"$set": {"last_active": now_iso()}})
     token = make_token(u["id"], u["role"])
     u.pop("password", None); u.pop("_id", None)
@@ -1413,6 +1422,7 @@ async def import_screenshot_start(
     chapter_default: Optional[str] = Form(""),
     class_default: Optional[str] = Form(""),
     exam_default: Optional[str] = Form(""),
+    type_default: Optional[str] = Form(""),
     attach_screenshot: Optional[bool] = Form(False),
     user: dict = Depends(require_role('admin')),
 ):
@@ -1436,7 +1446,7 @@ async def import_screenshot_start(
         "progress": {"pct": 2, "msg": "Queued…"}})
     opts = {"subject": subject_default or "", "chapter": chapter_default or "",
             "student_class": class_default or "", "exam": exam_default or "",
-            "attach_screenshot": bool(attach_screenshot)}
+            "q_type": type_default or "", "attach_screenshot": bool(attach_screenshot)}
     task = asyncio.create_task(_run_screenshot_job(job_id, q_imgs, a_imgs, opts))
     _bg_tasks.add(task); task.add_done_callback(_bg_tasks.discard)
     return {"job_id": job_id, "status": "processing"}

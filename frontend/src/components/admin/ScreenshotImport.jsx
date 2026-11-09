@@ -74,7 +74,7 @@ export default function ScreenshotImport({ onGenerated, pollImportJob }) {
   const [qShots, setQShots] = useState([]);
   const [aShots, setAShots] = useState([]);
   const [active, setActive] = useState("q");
-  const [fields, setFields] = useState({ subject: "auto", chapter: "", student_class: "", exam: "" });
+  const [fields, setFields] = useState({ subject: "auto", chapter: "", student_class: "", exam: "", q_type: "auto" });
   const [attach, setAttach] = useState(false);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(null);
@@ -149,6 +149,7 @@ export default function ScreenshotImport({ onGenerated, pollImportJob }) {
       if (fields.chapter.trim()) fd.append("chapter_default", fields.chapter.trim());
       if (fields.student_class.trim()) fd.append("class_default", fields.student_class.trim());
       if (fields.exam.trim()) fd.append("exam_default", fields.exam.trim());
+      if (fields.q_type && fields.q_type !== "auto") fd.append("type_default", fields.q_type);
       fd.append("attach_screenshot", attach ? "true" : "false");
       const { job_id } = await importApi.screenshotStart(fd);
       const r = await pollImportJob(job_id, (p) => setProgress(p));
@@ -195,7 +196,7 @@ export default function ScreenshotImport({ onGenerated, pollImportJob }) {
           onAdd={(f) => addFiles(f, "a")} onRemove={(i) => setAShots((p) => p.filter((_, j) => j !== i))} onCrop={(i) => openCrop("a", i)} />
       </div>
 
-      <div className="grid sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         <div>
           <Label className="text-xs">Subject</Label>
           <Select value={fields.subject} onValueChange={(v) => setFields((f) => ({ ...f, subject: v }))}>
@@ -212,6 +213,22 @@ export default function ScreenshotImport({ onGenerated, pollImportJob }) {
         <div><Label className="text-xs">Chapter</Label><Input data-testid="shot-chapter" value={fields.chapter} placeholder="auto" onChange={(e) => setFields((f) => ({ ...f, chapter: e.target.value }))} /></div>
         <div><Label className="text-xs">Class</Label><Input data-testid="shot-class" value={fields.student_class} placeholder="e.g. 11" onChange={(e) => setFields((f) => ({ ...f, student_class: e.target.value }))} /></div>
         <div><Label className="text-xs">Exam</Label><Input data-testid="shot-exam" value={fields.exam} placeholder="e.g. NEET / JEE Main" onChange={(e) => setFields((f) => ({ ...f, exam: e.target.value }))} /></div>
+        <div>
+          <Label className="text-xs">Question type</Label>
+          <Select value={fields.q_type} onValueChange={(v) => setFields((f) => ({ ...f, q_type: v }))}>
+            <SelectTrigger data-testid="shot-type"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="auto">Auto (detect)</SelectItem>
+              <SelectItem value="mcq_single">MCQ — single correct</SelectItem>
+              <SelectItem value="mcq_multi">MCQ — multiple correct</SelectItem>
+              <SelectItem value="integer">Integer / numerical</SelectItem>
+              <SelectItem value="assertion_reason">Assertion – Reason</SelectItem>
+              <SelectItem value="match">Match the following</SelectItem>
+              <SelectItem value="true_false">True / False</SelectItem>
+              <SelectItem value="subjective">Subjective</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       <label className="flex items-center gap-2 text-sm cursor-pointer">

@@ -44,7 +44,7 @@ export default function ChapterPlaylist() {
     try {
       // a chapter-only practice set (does not replace today's DPP)
       const t = await practiceApi.generate({ subjects: [playlist.subject], chapters: [playlist.chapter], count: 10, allow_repeat: true });
-      nav(`/student/exam/${t.id}`);
+      nav(`/student/cbt/${t.id}`);
     } catch (e) { toast.error(e?.response?.data?.detail || "Could not start DPP"); setStarting(false); }
   };
 
