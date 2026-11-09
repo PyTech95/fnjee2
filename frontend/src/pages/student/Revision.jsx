@@ -87,7 +87,7 @@ export default function Revision() {
       {started && q && (
         <Card className="en-card p-6" data-testid="revision-card">
           <div className="flex items-center justify-between text-sm mb-4">
-            <Badge variant="secondary" className="rounded-full">{q.subject}{q.chapter ? ` · ${q.chapter}` : ""}</Badge>
+            <Badge variant="secondary" className="rounded-full max-w-full truncate">{q.subject}{q.chapter ? ` · ${q.chapter}` : ""}{q.topic ? ` · ${q.topic}` : ""}</Badge>
             <span className="text-muted-foreground tabular-nums">{idx + 1} / {queue.length}</span>
           </div>
           <QuestionContent question={q} testId="revision-question" className="text-base font-medium leading-relaxed" />

@@ -23,10 +23,13 @@ export default function Signup() {
   const nav = useNavigate();
   const upd = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
-  // ?ref=CODE from an invite link fills the referral code
+  // ?ref=CODE from an invite link fills the referral code; ?exam=JEE (home page "Enroll for …") picks the exam
   useEffect(() => {
-    const ref = new URLSearchParams(window.location.search).get("ref");
+    const qs = new URLSearchParams(window.location.search);
+    const ref = qs.get("ref");
     if (ref) upd("referral_code", ref);
+    const exam = qs.get("exam");
+    if (exam && EXAMS.includes(exam)) upd("exam_target", exam);
   }, []);
   useEffect(() => { if (!loading && user) nav(dashboardFor(user.role), { replace: true }); /* eslint-disable-next-line */ }, [loading, user]);
 

@@ -224,6 +224,8 @@ class AttemptSubmitIn(BaseModel):
 class AssignTestIn(BaseModel):
     test_id: str
     student_ids: List[str]
+    starts_at: Optional[str] = None     # ISO date-time the test opens for these students ("" clears it)
+    replace: bool = True                # the list is the full assignment (unticked students are removed)
 
 class ParentAssignIn(BaseModel):
     title: str
@@ -1605,7 +1607,8 @@ async def import_ai_difficulty(payload: dict, user: dict = Depends(require_role(
 async def list_tests(user: dict = Depends(get_current_user)):
     q: dict = {}
     if user["role"] == "student":
-        q = {"$or": [{"assigned_to": user["id"]}, {"assigned_to": []}]}
+        # assigned to me, or an open (unassigned) admin test — a teacher's paper stays private until assigned
+        q = {"$or": [{"assigned_to": user["id"]}, {"assigned_to": [], "created_by_role": {"$nin": ["teacher"]}}]}
     elif user["role"] == "parent":
         q = {"created_by": user["id"]}
     elif user["role"] == "teacher":
@@ -1613,7 +1616,37 @@ async def list_tests(user: dict = Depends(get_current_user)):
     else:
         q["personal"] = {"$ne": True}
     docs = await db.tests.find(q, {"_id": 0}).sort("created_at", -1).to_list(300)
+    await _attach_test_content(docs)
     return docs
+
+
+async def _attach_test_content(tests: list):
+    """Every test card shows what it covers (subjects + chapters) — meeting 9 Nov: a student must
+    know which subject/chapter a drill or retest is about. Computed once, then cached on the test."""
+    todo = [t for t in tests if not isinstance(t.get("content"), dict)]
+    ids = list({qid for t in todo for qid in (t.get("question_ids") or [])})
+    if not ids:
+        return
+    qinfo = {}
+    async for qd in db.questions.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "subject": 1, "chapter": 1}):
+        qinfo[qd["id"]] = qd
+    for t in todo:
+        subj, chap = {}, {}
+        for qid in t.get("question_ids") or []:
+            qd = qinfo.get(qid) or {}
+            if qd.get("subject"):
+                subj[qd["subject"]] = subj.get(qd["subject"], 0) + 1
+            c = taxonomy.clean_label(qd.get("chapter")) if qd.get("chapter") else ""
+            if c:
+                chap[c] = chap.get(c, 0) + 1
+        content = {"subjects": [k for k, _ in sorted(subj.items(), key=lambda kv: -kv[1])],
+                   "chapters": [k for k, _ in sorted(chap.items(), key=lambda kv: -kv[1])][:6],
+                   "chapter_count": len(chap)}
+        t["content"] = content
+        try:
+            await db.tests.update_one({"id": t["id"]}, {"$set": {"content": content}})
+        except Exception:
+            pass
 
 @api.get("/tests/{tid}")
 async def get_test(tid: str, include_questions: bool = False, user: dict = Depends(get_current_user)):
@@ -1680,12 +1713,59 @@ async def random_test_builder(payload: dict, user: dict = Depends(get_current_us
 
 
 @api.post("/tests/assign")
-async def assign_test(inp: AssignTestIn, user: dict = Depends(require_role('admin'))):
-    await db.tests.update_one({"id": inp.test_id}, {"$addToSet": {"assigned_to": {"$each": inp.student_ids}}})
-    for sid in inp.student_ids:
-        await db.notifications.insert_one({"id": new_id(), "user_id": sid, "type": "test_assigned",
-            "message": "New test assigned", "test_id": inp.test_id, "created_at": now_iso(), "read": False})
-    return {"ok": True}
+async def assign_test(inp: AssignTestIn, user: dict = Depends(require_role('admin', 'teacher'))):
+    """Admin or the teacher who made the paper assigns it to chosen students, optionally from a date/time."""
+    t = await db.tests.find_one({"id": inp.test_id}, {"_id": 0, "id": 1, "title": 1, "created_by": 1, "assigned_to": 1})
+    if not t: raise HTTPException(404, "Test not found")
+    if user["role"] == "teacher" and t.get("created_by") != user["id"]:
+        raise HTTPException(403, "You can only assign your own papers")
+    ids = list(dict.fromkeys(inp.student_ids))
+    valid = {u["id"] for u in await db.users.find({"id": {"$in": ids}, "role": "student"}, {"_id": 0, "id": 1}).to_list(len(ids) or 1)}
+    ids = [i for i in ids if i in valid]
+    upd: dict = {"updated_at": now_iso()}
+    if inp.starts_at is not None:
+        upd["starts_at"] = inp.starts_at or None
+    if inp.replace:
+        upd["assigned_to"] = ids
+        await db.tests.update_one({"id": inp.test_id}, {"$set": upd})
+    else:
+        await db.tests.update_one({"id": inp.test_id}, {"$set": upd, "$addToSet": {"assigned_to": {"$each": ids}}})
+    new = [i for i in ids if i not in (t.get("assigned_to") or [])]
+    when = ""
+    if inp.starts_at:
+        try:
+            ist = datetime.fromisoformat(inp.starts_at.replace("Z", "+00:00")).astimezone(timezone(timedelta(hours=5, minutes=30)))
+            when = " — opens " + ist.strftime("%d %b, %I:%M %p")
+        except Exception:
+            when = ""
+    if new:
+        await db.notifications.insert_many([{"id": new_id(), "user_id": sid, "type": "test_assigned",
+            "message": f"New test assigned: {t.get('title', 'Test')}{when}", "test_id": inp.test_id,
+            "created_at": now_iso(), "read": False} for sid in new])
+    return {"ok": True, "assigned": len(ids), "new": len(new), "starts_at": upd.get("starts_at")}
+
+
+@api.get("/students/directory")
+async def students_directory(user: dict = Depends(require_role('admin', 'teacher'))):
+    """Students a teacher/admin can assign work to (no private fields)."""
+    return await db.users.find({"role": "student"}, {"_id": 0, "id": 1, "name": 1, "email": 1, "exam_target": 1,
+                                                       "student_class": 1}).sort("name", 1).to_list(5000)
+
+
+def _not_open_yet(t: dict) -> Optional[str]:
+    """If the test has a future starts_at, a human message; else None."""
+    st = t.get("starts_at")
+    if not st:
+        return None
+    try:
+        d = datetime.fromisoformat(str(st).replace("Z", "+00:00"))
+        if d.tzinfo is None: d = d.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+    if d <= datetime.now(timezone.utc):
+        return None
+    ist = d.astimezone(timezone(timedelta(hours=5, minutes=30)))
+    return f"This test opens on {ist.strftime('%d %b %Y, %I:%M %p')} IST"
 
 
 @api.post("/tests/parent-assign")
@@ -1723,19 +1803,16 @@ async def parent_assign(inp: ParentAssignIn, user: dict = Depends(require_role('
 async def start_attempt(inp: AttemptStartIn, user: dict = Depends(require_role('student'))):
     t = await db.tests.find_one({"id": inp.test_id}, {"_id": 0})
     if not t: raise HTTPException(404, "Test not found")
+    msg = _not_open_yet(t)
+    if msg: raise HTTPException(400, msg)
     existing = await db.attempts.find_one({"test_id": inp.test_id, "user_id": user["id"], "status": "in_progress"}, {"_id": 0})
     if existing: return existing
-    # One-attempt lock: a completed test can only be reattempted with a Retake Pass.
-    submitted = await db.attempts.find_one({"test_id": inp.test_id, "user_id": user["id"], "status": "submitted"}, {"_id": 0})
-    if submitted:
-        if not inp.use_retake_pass:
-            return submitted
-        fresh = await db.users.find_one({"id": user["id"]})
-        if fresh.get("retake_passes", 0) <= 0:
-            raise HTTPException(400, "No Retake Pass available. Buy one in the Coin Store.")
-        await db.users.update_one({"id": user["id"]}, {"$inc": {"retake_passes": -1}})
-        await db.notifications.insert_one({"id": new_id(), "user_id": user["id"], "type": "store",
-            "message": "🎟️ Retake Pass used — good luck on your reattempt!", "created_at": now_iso(), "read": False})
+    # A completed test opens its result; "Retake" (use_retake_pass=True) starts a fresh attempt.
+    # Retakes are free (meeting 9 Nov: retake must always work); "best of" is shown on My Tests.
+    submitted = await db.attempts.find_one({"test_id": inp.test_id, "user_id": user["id"], "status": "submitted"}, {"_id": 0},
+                                           sort=[("submitted_at", -1)])
+    if submitted and not inp.use_retake_pass:
+        return submitted
     a = {"id": new_id(), "test_id": inp.test_id, "user_id": user["id"],
          "started_at": now_iso(),
          "ends_at": (datetime.now(timezone.utc) + timedelta(minutes=t["duration_minutes"])).isoformat(),
@@ -2181,7 +2258,6 @@ async def my_rewards(user: dict = Depends(get_current_user)):
 STORE_ITEMS = [
     {"id": "streak_freeze", "name": "Streak Freeze", "desc": "Save your streak on a day you miss practice.", "cost": 120, "icon": "snowflake", "field": "streak_freezes"},
     {"id": "hint_token", "name": "Hint Token", "desc": "Reveal a helpful hint on a tough question.", "cost": 60, "icon": "lightbulb", "field": "hint_tokens"},
-    {"id": "retake_pass", "name": "Retake Pass", "desc": "Reattempt a completed test one more time.", "cost": 200, "icon": "repeat", "field": "retake_passes"},
 ]
 
 
@@ -2454,22 +2530,47 @@ async def subjects_meta():
 async def dpp_generate(payload: dict, user: dict = Depends(require_role('student'))):
     """Generate today's DPP. Pick N questions across selected subjects/chapters."""
     subjects = payload.get("subjects") or ["Physics", "Chemistry", "Biology"]
-    count = int(payload.get("count", 20))
+    count = int(payload.get("count", 20) or 20)
     difficulty = payload.get("difficulty")
     today = datetime.now(timezone.utc).date().isoformat()
     existing = await db.dpps.find_one({"user_id": user["id"], "date": today}, {"_id": 0})
     if existing and not payload.get("regenerate"):
         return existing
-    q: dict = {"status": "approved", "subject": {"$in": subjects}}
-    if difficulty: q["difficulty"] = difficulty
-    docs = await db.questions.find(q, {"_id": 0}).to_list(2000)
-    random.shuffle(docs)
-    picked = docs[:count]
+    chapters = [c for c in (payload.get("chapters") or []) if c]
+    topics = [t for t in (payload.get("topics") or []) if t]
+    count = max(5, min(count, 100))
+    base: dict = {"status": "approved", "personal": {"$ne": True}}
+    if difficulty: base["difficulty"] = difficulty
+    if chapters: base["chapter"] = {"$in": chapters}
+    if topics: base["topic"] = {"$in": topics}
+    # Random sample per subject so a mixed DPP really mixes subjects (meeting 9 Nov: picking
+    # Physics/Chemistry still gave Biology, because the first 2,000 rows of the bank were Biology).
+    active = subjects
+    if chapters or topics:
+        have = await db.questions.distinct("subject", {**base, "subject": {"$in": subjects}})
+        active = [x for x in subjects if x in have] or subjects
+    share = [count // len(active) + (1 if i < count % len(active) else 0) for i in range(len(active))]
+    picked: list = []
+    for subj, n in zip(active, share):
+        if n <= 0:
+            continue
+        picked += await db.questions.aggregate([{"$match": {**base, "subject": subj}}, {"$sample": {"size": n}},
+                                                {"$project": {"_id": 0}}]).to_list(n)
+    if len(picked) < count:   # a subject ran short: top up from the others
+        got = {d["id"] for d in picked}
+        more = await db.questions.aggregate([{"$match": {**base, "subject": {"$in": active}, "id": {"$nin": list(got)}}},
+                                             {"$sample": {"size": count - len(picked)}}, {"$project": {"_id": 0}}]).to_list(count)
+        picked += more
+    if not picked:
+        raise HTTPException(400, "No approved questions for these subjects / chapters yet — try other chapters.")
+    random.shuffle(picked)
+    count = len(picked)
     total = sum(x.get("marks", 4) for x in picked)
     t_id = new_id()
-    t = {"id": t_id, "title": f"DPP · {today}", "exam_type": "dpp",
+    label = (", ".join(chapters[:2]) + (f" +{len(chapters) - 2}" if len(chapters) > 2 else "")) if chapters else ""
+    t = {"id": t_id, "title": f"DPP · {today}" + (f" · {label}" if label else ""), "exam_type": "dpp",
          "description": f"Daily Practice Problems — {count} Qs",
-         "subjects": subjects, "duration_minutes": max(15, count * 1),
+         "subjects": active, "duration_minutes": max(15, count * 1),
          "total_marks": total, "negative_marking": False,
          "shuffle_questions": False, "shuffle_options": False, "show_solutions_after": True,
          "question_ids": [d["id"] for d in picked], "sections": [],
@@ -2477,7 +2578,8 @@ async def dpp_generate(payload: dict, user: dict = Depends(require_role('student
          "created_at": now_iso()}
     await db.tests.insert_one(t)
     dpp = {"id": new_id(), "user_id": user["id"], "date": today,
-           "test_id": t_id, "subjects": subjects, "count": count, "created_at": now_iso()}
+           "test_id": t_id, "subjects": active, "chapters": chapters, "topics": topics,
+           "count": count, "created_at": now_iso()}
     await db.dpps.update_one({"user_id": user["id"], "date": today}, {"$set": dpp}, upsert=True)
     dpp.pop("_id", None)
     return dpp
@@ -2532,7 +2634,47 @@ async def list_flashcards(subject: Optional[str] = None, chapter: Optional[str] 
     q: dict = {}
     if subject: q["subject"] = subject
     if chapter: q["chapter"] = chapter
-    return await db.flashcards.find(q, {"_id": 0}).limit(200).to_list(200)
+    cards = await db.flashcards.find(q, {"_id": 0}).limit(200).to_list(200)
+    if subject and chapter and len(cards) < 10:
+        cards += await _auto_flashcards(subject, chapter, 30 - len(cards))
+    return cards
+
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _plain(v, n: int) -> str:
+    t = _TAG_RE.sub(" ", str(v or "")).replace("&nbsp;", " ")
+    t = re.sub(r"\s+", " ", t).strip()
+    return t if len(t) <= n else t[: n - 1].rstrip() + "…"
+
+
+async def _auto_flashcards(subject: str, chapter: str, n: int) -> list:
+    """Every chapter gets flashcards: built from its approved MCQs (question → answer + short solution),
+    so students are never stuck with "no cards" for a chapter the admin hasn't written cards for."""
+    if n <= 0:
+        return []
+    docs = await db.questions.aggregate([
+        {"$match": {"status": "approved", "personal": {"$ne": True}, "subject": subject, "chapter": chapter,
+                    "type": {"$in": ["mcq_single", "true_false", "assertion_reason", None]}, "correct.0": {"$exists": True},
+                    "image_url": {"$in": [None, ""]}}},
+        {"$sample": {"size": n}}, {"$project": {"_id": 0}}]).to_list(n)
+    out = []
+    for q in docs:
+        opts = q.get("options") or []
+        letter = str((q.get("correct") or [""])[0]).strip().upper()
+        idx = "ABCDEFGH".find(letter) if len(letter) == 1 else -1
+        ans = opts[idx] if 0 <= idx < len(opts) else letter
+        if isinstance(ans, dict):
+            ans = ans.get("text", "")
+        back = f"Answer: {letter}) {_plain(ans, 160)}" if idx >= 0 else f"Answer: {_plain(ans, 160)}"
+        if q.get("explanation"):
+            back += " — " + _plain(q["explanation"], 260)
+        front = _plain(q.get("text"), 240)
+        if front:
+            out.append({"id": f"auto-{q['id']}", "subject": subject, "chapter": chapter, "front": front, "back": back,
+                        "source": "question_bank"})
+    return out
 
 
 @api.get("/flashcards/chapters")
@@ -2542,8 +2684,18 @@ async def flashcards_chapters(user: dict = Depends(get_current_user)):
             await db.flashcards.insert_one({**f, "id": new_id(), "created_at": now_iso()})
     pipeline = [{"$group": {"_id": {"subject": "$subject", "chapter": "$chapter"}, "count": {"$sum": 1}}},
                 {"$sort": {"count": -1}}]
-    agg = await db.flashcards.aggregate(pipeline).to_list(200)
-    return [{"subject": r["_id"]["subject"], "chapter": r["_id"]["chapter"], "cards": r["count"]} for r in agg]
+    agg = await db.flashcards.aggregate(pipeline).to_list(500)
+    out = {(r["_id"]["subject"], r["_id"]["chapter"]): {"subject": r["_id"]["subject"], "chapter": r["_id"]["chapter"],
+                                                        "cards": r["count"], "student_class": ""} for r in agg}
+    # plus every chapter of the question bank (cards are built from its questions)
+    for r in await practice_chapters(user):
+        key = (r["subject"], r["chapter"])
+        if key in out:
+            out[key]["student_class"] = r.get("student_class", "")
+        else:
+            out[key] = {"subject": r["subject"], "chapter": r["chapter"], "cards": min(30, r.get("count", 0)),
+                        "student_class": r.get("student_class", ""), "auto": True}
+    return list(out.values())
 
 
 # ---------- Mindmaps ----------
@@ -2648,14 +2800,37 @@ COURSE_SEEDS = [
      "highlights": ["Complete question bank", "Recorded video lectures", "DPP & micro-targets",
                     "15,000+ questions", "NCERT filter", "Performance snapshot"],
      "subjects": ["Physics", "Chemistry", "Biology"], "duration_months": 12},
+    # JEE batches (meeting 9 Nov: "wherever NEET is on the site, JEE should be too").
+    # Prices mirror the matching NEET batch — change them in Admin or here.
+    {"slug": "jee-target-2027", "title": "JEE Target Batch", "target": "JEE 2027", "kind": "1 Year CBT",
+     "price": 799, "mrp": 1499, "featured": True, "rating": 4.8, "reviews": 0, "enrolments": 0,
+     "highlights": ["JEE Main + Advanced question bank", "Chapter-wise & full-syllabus CBT mocks", "DPP & micro-targets",
+                    "PYQs with solutions", "Rank predictor", "Performance snapshot"],
+     "subjects": ["Physics", "Chemistry", "Mathematics"], "duration_months": 12},
+    {"slug": "jee-test-series-2027", "title": "JEE Main Test Series", "target": "JEE 2027", "kind": "Test Series CBT",
+     "price": 499, "mrp": 999, "featured": False, "rating": 4.8, "reviews": 0, "enrolments": 0,
+     "highlights": ["NTA-pattern JEE Main mocks", "Full-syllabus + chapter tests", "Smart analytics",
+                    "Detailed solutions", "Question bookmarking", "All-India rank estimate"],
+     "subjects": ["Physics", "Chemistry", "Mathematics"], "duration_months": 12},
+    {"slug": "jee-foundation-2028", "title": "JEE Foundation Batch", "target": "JEE 2028", "kind": "2 Year CBT",
+     "price": 1499, "mrp": 2999, "featured": True, "rating": 4.8, "reviews": 0, "enrolments": 0,
+     "highlights": ["Class 11 + 12 complete question bank", "JEE Main + Advanced mocks", "DPP & micro-targets",
+                    "15,000+ questions", "PYQs with solutions", "Performance snapshot"],
+     "subjects": ["Physics", "Chemistry", "Mathematics"], "duration_months": 24},
 ]
+
+
+async def _ensure_courses():
+    """Seed the catalog, and add any seed course that an older database is missing (by slug)."""
+    have = set(await db.courses.distinct("slug"))
+    for c in COURSE_SEEDS:
+        if c["slug"] not in have:
+            await db.courses.insert_one({**c, "id": new_id(), "created_at": now_iso()})
 
 
 @api.get("/courses")
 async def list_courses(target: Optional[str] = None):
-    if await db.courses.count_documents({}) == 0:
-        for c in COURSE_SEEDS:
-            await db.courses.insert_one({**c, "id": new_id(), "created_at": now_iso()})
+    await _ensure_courses()
     q = {"target": target} if target else {}
     docs = await db.courses.find(q, {"_id": 0}).to_list(50)
     return docs
@@ -2663,9 +2838,7 @@ async def list_courses(target: Optional[str] = None):
 
 @api.get("/courses/{slug}")
 async def get_course(slug: str):
-    if await db.courses.count_documents({}) == 0:
-        for c in COURSE_SEEDS:
-            await db.courses.insert_one({**c, "id": new_id(), "created_at": now_iso()})
+    await _ensure_courses()
     c = await db.courses.find_one({"slug": slug}, {"_id": 0})
     if not c: raise HTTPException(404, "Course not found")
     return c
@@ -2862,15 +3035,14 @@ async def chapter_playlist(subject: str, chapter: str, user: dict = Depends(get_
     if await db.mindmaps.count_documents({}) == 0:
         for m in MINDMAP_SEEDS:
             await db.mindmaps.insert_one({**m, "id": new_id(), "created_at": now_iso()})
-    dpp_qs = await db.questions.find(
-        {"status": "approved", "subject": subject,
-         "$or": [{"chapter": chapter}, {"chapter": {"$regex": chapter, "$options": "i"}}]},
-        {"_id": 0}
-    ).to_list(200)
-    if len(dpp_qs) < 5:
-        dpp_qs += await db.questions.find({"status": "approved", "subject": subject}, {"_id": 0}).limit(10).to_list(10)
-    random.shuffle(dpp_qs); dpp_qs = dpp_qs[:10]
+    dpp_qs = await db.questions.aggregate([
+        {"$match": {"status": "approved", "personal": {"$ne": True}, "subject": subject,
+                    "$or": [{"chapter": chapter}, {"chapter": {"$regex": f"^{re.escape(chapter)}", "$options": "i"}}]}},
+        {"$sample": {"size": 10}}, {"$project": {"_id": 0}}]).to_list(10)
+    dpp_qs = [_strip_q(x) for x in dpp_qs]   # no answer key in the payload
     flashcards = await db.flashcards.find({"subject": subject, "chapter": chapter}, {"_id": 0}).to_list(50)
+    if len(flashcards) < 10:
+        flashcards += await _auto_flashcards(subject, chapter, 20 - len(flashcards))
     mindmap = await db.mindmaps.find_one({"subject": subject, "chapter": chapter}, {"_id": 0})
     total_minutes = 10 + max(2, len(flashcards) // 4) + 5  # dpp + flashcards + mindmap read
     return {"subject": subject, "chapter": chapter,
@@ -2887,16 +3059,18 @@ async def chapter_playlist(subject: str, chapter: str, user: dict = Depends(get_
 
 @api.get("/playlist/chapters")
 async def playlist_chapters(user: dict = Depends(get_current_user)):
-    """Chapters that have at least a mindmap OR flashcards — used for the playlist picker."""
+    """Every chapter with practice questions (plus any with a mindmap) — the student picks any chapter."""
     if await db.mindmaps.count_documents({}) == 0:
         for m in MINDMAP_SEEDS:
             await db.mindmaps.insert_one({**m, "id": new_id(), "created_at": now_iso()})
-    docs = await db.mindmaps.find({}, {"_id": 0, "subject": 1, "chapter": 1}).to_list(200)
-    seen = set(); out = []
-    for d in docs:
-        key = f"{d['subject']}|{d['chapter']}"
-        if key in seen: continue
-        seen.add(key); out.append(d)
+    maps = {(d["subject"], d["chapter"]) for d in await db.mindmaps.find({}, {"_id": 0, "subject": 1, "chapter": 1}).to_list(500)}
+    out, seen = [], set()
+    for r in await practice_chapters(user):
+        key = (r["subject"], r["chapter"]); seen.add(key)
+        out.append({"subject": r["subject"], "chapter": r["chapter"], "student_class": r.get("student_class", ""),
+                    "has_map": key in maps, "questions": True})
+    for subj, ch in sorted(maps - seen):
+        out.append({"subject": subj, "chapter": ch, "student_class": "", "has_map": True, "questions": False})
     return out
 
 
@@ -2966,11 +3140,22 @@ async def practice_chapters(user: dict = Depends(get_current_user)):
         if t: node["topics"][t] = node["topics"].get(t, 0) + r["n"]
     out = []
     for (s_, ch), node in tree.items():
+        if user.get("role") in ("student", "parent") and not _chapter_like(s_, ch, node["count"]):
+            continue   # hide import debris like "D" / "Point" from students (admins still see it in the bank)
         cls = sorted(node["classes"])
         out.append({"subject": s_, "chapter": ch, "student_class": cls[0] if len(cls) == 1 else "", "count": node["count"],
                     "topics": [{"name": t, "count": n} for t, n in sorted(node["topics"].items())]})
     out.sort(key=lambda x: (x["subject"],) + taxonomy.chapter_order(x["subject"], x["student_class"], x["chapter"]))
     return out
+
+
+def _chapter_like(subject: str, chapter: str, count: int) -> bool:
+    """Syllabus chapters always show; other labels only if they look like a real chapter name."""
+    if taxonomy.canonical_chapter(subject, chapter)[1]:
+        return True
+    name = taxonomy.clean_label(chapter)
+    words = [w for w in re.split(r"[^A-Za-z]+", name) if len(w) >= 3 and w.lower() not in ("class", "module", "part", "unit")]
+    return count >= 25 and len(words) >= 1 and (len(words) >= 2 or len(name) >= 8)
 
 
 @api.post("/practice/generate")

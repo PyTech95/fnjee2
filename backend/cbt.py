@@ -105,6 +105,7 @@ def register_cbt(app, db, get_current_user, require_role):
     # ---------- request models ----------
     class StartIn(BaseModel):
         test_id: str
+        retake: bool = False   # True = start a fresh attempt even if this test was already submitted
 
     class ResponseIn(BaseModel):
         question_id: str
@@ -227,6 +228,19 @@ def register_cbt(app, db, get_current_user, require_role):
             raise HTTPException(404, "Exam not found")
         if test.get("published") is False:
             raise HTTPException(403, "This exam is not published yet.")
+        st = test.get("starts_at")
+        if st:
+            try:
+                d = datetime.fromisoformat(str(st).replace("Z", "+00:00"))
+                if d.tzinfo is None:
+                    d = d.replace(tzinfo=timezone.utc)
+                if d > datetime.now(timezone.utc):
+                    ist = d.astimezone(timezone(timedelta(hours=5, minutes=30)))
+                    raise HTTPException(400, f"This test opens on {ist.strftime('%d %b %Y, %I:%M %p')} IST")
+            except HTTPException:
+                raise
+            except Exception:
+                pass
 
         # Demo exam: always let the candidate retake it — clear any prior
         # attempt/responses for this user so /demo can be experienced repeatedly.
@@ -238,16 +252,19 @@ def register_cbt(app, db, get_current_user, require_role):
             await db.cbt_attempts.delete_many({"test_id": inp.test_id, "user_id": user["id"]})
             await db.attempts.delete_many({"test_id": inp.test_id, "user_id": user["id"]})
 
-        # Already submitted -> return the locked attempt (no new attempt).
-        submitted = await db.cbt_attempts.find_one(
-            {"test_id": inp.test_id, "user_id": user["id"], "status": "submitted"}, {"_id": 0})
-        if submitted:
-            return {**submitted, "remaining_seconds": 0}
-
+        # Resume a live attempt first (also covers a retake that is in progress).
         existing = await db.cbt_attempts.find_one(
             {"test_id": inp.test_id, "user_id": user["id"], "status": "in_progress"}, {"_id": 0})
         if existing:
             return {**existing, "remaining_seconds": _remaining_seconds(existing)}
+
+        # Already submitted -> show the locked result, unless the student asked to retake
+        # (retakes are free; every attempt keeps its own result and "best of" is shown).
+        submitted = await db.cbt_attempts.find_one(
+            {"test_id": inp.test_id, "user_id": user["id"], "status": "submitted"}, {"_id": 0},
+            sort=[("submitted_at", -1)])
+        if submitted and not inp.retake:
+            return {**submitted, "remaining_seconds": 0}
 
         # Create exactly one attempt; guard a race with a unique compound index.
         now = datetime.now(timezone.utc)
@@ -660,7 +677,8 @@ def register_cbt(app, db, get_current_user, require_role):
             qs = await db.questions.find({"id": {"$in": upd["question_ids"]}}, {"_id": 0, "marks": 1}).to_list(2000)
             upd["total_marks"] = round(sum(float(q.get("marks", 4)) for q in qs), 2)
         upd["updated_at"] = _now_iso()
-        await db.tests.update_one({"id": tid}, {"$set": upd})
+        upd_unset = {"content": ""} if "question_ids" in upd else {}   # subject/chapter summary is recomputed
+        await db.tests.update_one({"id": tid}, {"$set": upd, **({"$unset": upd_unset} if upd_unset else {})})
         return await db.tests.find_one({"id": tid}, {"_id": 0})
 
     @router.post("/admin/exams/{tid}/validate")

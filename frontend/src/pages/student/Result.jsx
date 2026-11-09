@@ -134,7 +134,7 @@ export default function Result() {
             </div>
             <div className="mt-2 text-sm text-muted-foreground">{percent}% overall · predicted percentile <b className="text-foreground">{percentile}</b></div>
             <div className="mt-6 flex flex-wrap gap-2">
-              <Link to={`/student/exam/${test.id}`}><Button data-testid="retake-btn" className="rounded-full">Retake test</Button></Link>
+              <Link to={`/student/cbt/${test.id}?retake=1`}><Button data-testid="retake-btn" className="rounded-full">Retake test</Button></Link>
               {(attempt.detailed || []).some(d => d.result === "wrong") && (
                 <Button data-testid="retest-wrong-btn" variant="outline" className="rounded-full" onClick={retestWrong}>
                   <RefreshCw className="h-4 w-4 mr-2" /> Retest wrong only ({attempt.wrong})

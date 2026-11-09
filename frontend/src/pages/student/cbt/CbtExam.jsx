@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { cbtApi } from "@/lib/cbtApi";
 import { useAuth } from "@/contexts/AuthContext";
 import MathText from "@/components/MathText";
@@ -18,6 +18,21 @@ const LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H"];
 const draftKey = (aid) => `cbt_draft_${aid}`;
 const visitedKey = (aid) => `cbt_visited_${aid}`;
 
+// Exam banner follows the paper's content (a Biology drill must not say "JEE Advanced").
+export function examFamily(exam) {
+  const title = String(exam?.exam?.title || "");
+  const subs = (exam?.subjects || []).map((s) => String(s.name || s.id || "").toLowerCase());
+  const t = title.toLowerCase();
+  if (/\bneet\b/.test(t) || subs.some((s) => s.startsWith("bio") || s === "botany" || s === "zoology"))
+    return { badge: "NEET", hi: "राष्ट्रीय पात्रता सह प्रवेश परीक्षा (स्नातक)", en: "National Eligibility cum Entrance Test (UG)" };
+  if (/jee\s*adv/.test(t))
+    return { badge: "JEE", hi: "संयुक्त प्रवेश परीक्षा (उच्च)", en: "Joint Entrance Examination (Advanced)" };
+  if (/\bjee\b/.test(t) || subs.some((s) => s.startsWith("math")))
+    return { badge: "JEE", hi: "संयुक्त प्रवेश परीक्षा (मुख्य)", en: "Joint Entrance Examination (Main)" };
+  if (/olympiad/.test(t)) return { badge: "OLY", hi: "ओलंपियाड", en: "Olympiad Practice Test" };
+  return { badge: "CBT", hi: "कंप्यूटर आधारित परीक्षा", en: "Computer Based Test" };
+}
+
 function fmtTime(sec) {
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
@@ -27,6 +42,8 @@ function fmtTime(sec) {
 
 export default function CbtExam() {
   const { testId } = useParams();
+  const [searchParams] = useSearchParams();
+  const retake = searchParams.get("retake") === "1";
   const nav = useNavigate();
   const { user } = useAuth();
 
@@ -60,7 +77,7 @@ export default function CbtExam() {
     let cancelled = false;
     (async () => {
       try {
-        const [ex, at] = await Promise.all([cbtApi.getExam(testId), cbtApi.start(testId)]);
+        const [ex, at] = await Promise.all([cbtApi.getExam(testId), cbtApi.start(testId, retake)]);
         if (cancelled) return;
         setExam(ex);
         setAttempt(at);
@@ -96,7 +113,7 @@ export default function CbtExam() {
       }
     })();
     return () => { cancelled = true; };
-  }, [testId, nav]);
+  }, [testId, nav, retake]);
 
   /* ---------------- persist draft + visited locally ---------------- */
   useEffect(() => {
@@ -285,17 +302,18 @@ export default function CbtExam() {
   if (!q) return <div className="min-h-screen grid place-items-center text-slate-500">No questions in this exam.</div>;
   const draftAns = draft[currentQid]?.answer || [];
   const timeCritical = remaining > 0 && remaining < 300;
+  const fam = examFamily(exam);
 
   return (
     <div data-testid="cbt-exam-page" className="min-h-screen bg-slate-100 flex flex-col text-slate-900">
-      {/* ---------- TRICOLOR JEE BANNER ---------- */}
+      {/* ---------- TRICOLOR EXAM BANNER ---------- */}
       <div className="bg-white">
         <div className="flex items-center gap-3 px-3 sm:px-5 py-2">
           <div className="h-11 w-11 rounded bg-gradient-to-br from-[#ff9933] via-white to-[#138808] grid place-items-center shrink-0 border border-slate-200">
-            <span className="font-display font-extrabold text-[#0b3d6b] text-xs leading-none">JEE</span>
+            <span className="font-display font-extrabold text-[#0b3d6b] text-xs leading-none">{fam.badge}</span>
           </div>
           <div className="min-w-0 leading-tight">
-            <div className="text-[10px] sm:text-[11px] text-slate-500">संयुक्त प्रवेश परीक्षा (उच्च) · Joint Entrance Examination (Advanced) 2026</div>
+            <div className="text-[10px] sm:text-[11px] text-slate-500 truncate">{fam.hi} · {fam.en}</div>
             <div className="font-display font-bold text-[#0b3d6b] text-sm sm:text-base truncate">FNJEE Computer Based Test</div>
           </div>
           <div className="ml-auto flex items-center gap-2 shrink-0">
@@ -630,6 +648,7 @@ function InstructionsBody({ exam, lang }) {
 function PreExam({ exam, user, lang, setLang, agree, setAgree, starting, onStart, subjects }) {
   const [step, setStep] = useState(0);
   const totalQ = exam.total_questions;
+  const fam = examFamily(exam);
   const candidate = (
     <div className="flex flex-col items-center gap-2 w-40 shrink-0">
       <img src={user?.avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${user?.name || "Student"}`}
@@ -642,9 +661,9 @@ function PreExam({ exam, user, lang, setLang, agree, setAgree, starting, onStart
   const Header = (
     <div className="w-full">
       <div className="flex items-center gap-4 px-4 sm:px-6 py-3 bg-gradient-to-r from-[#0b2e59] to-[#17457e] text-white">
-        <div className="h-12 w-12 rounded-md bg-white/15 grid place-items-center font-display font-extrabold tracking-tight shrink-0">JEE</div>
+        <div className="h-12 w-12 rounded-md bg-white/15 grid place-items-center font-display font-extrabold tracking-tight shrink-0">{fam.badge}</div>
         <div className="min-w-0">
-          <div className="text-[10px] uppercase tracking-[0.25em] text-blue-200">Joint Entrance Examination (Advanced) 2026</div>
+          <div className="text-[10px] uppercase tracking-[0.25em] text-blue-200">{fam.en}</div>
           <div className="font-display font-bold text-base sm:text-xl leading-tight truncate">{exam.exam.title}</div>
         </div>
       </div>

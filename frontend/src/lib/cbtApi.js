@@ -3,7 +3,7 @@ import { api } from "@/lib/api";
 // DigiALM-style CBT examination APIs.
 export const cbtApi = {
   getExam: (tid) => api.get(`/cbt/exam/${tid}`).then((r) => r.data),
-  start: (test_id) => api.post("/cbt/attempts/start", { test_id }).then((r) => r.data),
+  start: (test_id, retake = false) => api.post("/cbt/attempts/start", { test_id, retake }).then((r) => r.data),
   state: (aid) => api.get(`/cbt/attempts/${aid}/state`).then((r) => r.data),
   setLanguage: (aid, language) =>
     api.post(`/cbt/attempts/${aid}/language`, { language }).then((r) => r.data),

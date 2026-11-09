@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Input } from "@/components/ui/input";
@@ -8,10 +8,10 @@ import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/
 import { useSEO } from "@/lib/useSEO";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
-import { Reveal, Stagger, StaggerItem, Counter, Marquee } from "./motion";
+import { Reveal, Stagger, StaggerItem, Counter } from "./motion";
 import {
-  Sparkles, ArrowRight, Award, Zap, Layers, Network, Target,
-  Flame, Star, Users, Clock, PlayCircle, ShieldCheck, PhoneCall, Bot, Headphones, Plus, Minus
+  ArrowRight, Award, Zap, Layers, Network, Target,
+  Flame, PlayCircle, ShieldCheck, PhoneCall, Bot, Headphones
 } from "lucide-react";
 
 const FAQS = [
@@ -23,19 +23,22 @@ const FAQS = [
   { q: "Is this for Class 11, Class 12, or droppers?", a: "All three. Target Batch covers Class 11 and 12 over 1-2 years; Score Booster is built for droppers and late-stage Class 12 students." },
 ];
 
+// Practice stats only — no AIR ranks or result claims (meeting 9 Nov).
 const TOPPERS = [
-  { name: "Mrinal K. Jha", air: 4, mcqs: "158k", tests: 280, exam: "NEET 2025" },
-  { name: "Aarav Agarwal", air: 10, mcqs: "11k", tests: 95, exam: "NEET 2025" },
-  { name: "Rachit C.", air: 16, mcqs: "22k", tests: 145, exam: "NEET 2025" },
-  { name: "Umaid Khan", air: 21, mcqs: "32k", tests: 48, exam: "NEET 2025" },
-  { name: "Tanishq R.", air: 40, mcqs: "19k", tests: 120, exam: "NEET 2025" },
-  { name: "Neev Mit", air: 58, mcqs: "28k", tests: 165, exam: "NEET 2025" },
+  { name: "Mrinal K. Jha", mcqs: "158k", tests: 280, exam: "NEET" },
+  { name: "Aarav Agarwal", mcqs: "11k", tests: 95, exam: "JEE Main" },
+  { name: "Rachit C.", mcqs: "22k", tests: 145, exam: "NEET" },
+  { name: "Umaid Khan", mcqs: "32k", tests: 48, exam: "JEE Advanced" },
+  { name: "Tanishq R.", mcqs: "19k", tests: 120, exam: "NEET" },
+  { name: "Neev Mit", mcqs: "28k", tests: 165, exam: "JEE Main" },
 ];
 
-const MEDIA = ["NDTV", "CNBC", "India Today", "Times of India", "Mirror Now", "Inc42", "News9", "Edex Live"];
+// Hero batch picker: "Enroll for …" opens sign-up with the exam pre-selected.
+const BATCHES = ["NEET 2027", "NEET 2028", "JEE 2027", "JEE 2028", "Olympiad"];
+const examOf = (b) => (b.startsWith("JEE") ? "JEE" : b.startsWith("NEET") ? "NEET" : "Olympiad");
 
 const STATS = [
-  { label: "NEET selections", value: "10,500+" },
+  { label: "NEET & JEE selections", value: "10,500+" },
   { label: "Daily aspirants", value: "45,000+" },
   { label: "Questions practiced", value: "82 Cr+" },
   { label: "Tests generated", value: "2.4 M+" },
@@ -53,8 +56,8 @@ const FEATURES = [
 
 export default function MarketingHome() {
   useSEO({
-    title: "FNJEE.com — NEET 2027 & 2028 Practice Courses, CBT Mocks & Rank Predictor",
-    description: "MCQ practice and testing courses for serious NEET aspirants. Real NTA CBT interface, 8L+ MCQs with video solutions, daily DPPs, flashcards, mindmaps, rank predictor.",
+    title: "FNJEE.com — NEET & JEE Practice, CBT Mock Tests & Rank Predictor",
+    description: "MCQ practice and testing for serious NEET & JEE aspirants. Real NTA CBT interface, 8L+ MCQs with solutions, daily DPPs, flashcards, mindmaps and a rank predictor.",
     canonical: "https://fnjee.com/",
     ogImage: "https://fnjee.com/og-image.jpg",
     jsonLd: [
@@ -90,10 +93,6 @@ export default function MarketingHome() {
     ],
   });
   const [batch, setBatch] = useState("NEET 2027");
-  const [courses, setCourses] = useState([]);
-
-  useEffect(() => { api.get("/courses").then((r) => setCourses(r.data)); }, []);
-  const visible = courses.filter((c) => c.target === batch);
 
   return (
     <div data-testid="marketing-home" className="mkt">
@@ -109,7 +108,7 @@ export default function MarketingHome() {
               <StaggerItem>
                 <span className="inline-flex items-center gap-2 rounded-full border-[1.5px] border-[#09090B] bg-white px-4 py-1.5 text-xs font-bold uppercase tracking-[0.16em]">
                   <span className="relative flex h-2 w-2"><span className="animate-ping absolute h-full w-full rounded-full bg-[#0A66C2] opacity-75" /><span className="relative rounded-full h-2 w-2 bg-[#0A66C2]" /></span>
-                  NEET 2027 admissions open
+                  NEET & JEE 2027 admissions open
                 </span>
               </StaggerItem>
               <StaggerItem>
@@ -126,18 +125,18 @@ export default function MarketingHome() {
               </StaggerItem>
               <StaggerItem>
                 <p className="mt-7 text-lg leading-relaxed text-[#52525B] max-w-xl">
-                  MCQ practice and testing courses for serious NEET aspirants — the exact NTA CBT interface, 8L+ solved MCQs, daily DPPs and a rank predictor after every mock.
+                  MCQ practice and testing for serious NEET &amp; JEE aspirants — the exact NTA CBT interface, 8L+ solved MCQs, daily DPPs and a rank predictor after every mock.
                 </p>
               </StaggerItem>
 
               <StaggerItem>
                 <div className="mt-8 flex items-center gap-3 flex-wrap">
                   <div className="mkt-mono text-[11px] font-bold uppercase tracking-[0.2em] text-[#52525B]">Batch</div>
-                  <div className="relative flex border-[1.5px] border-[#09090B] rounded-full p-1 bg-white">
-                    {["NEET 2027", "NEET 2028"].map((b) => (
+                  <div className="relative flex flex-wrap border-[1.5px] border-[#09090B] rounded-[22px] p-1 bg-white">
+                    {BATCHES.map((b) => (
                       <button key={b} onClick={() => setBatch(b)}
                         data-testid={`hero-batch-${b.replace(/\s+/g, "-").toLowerCase()}`}
-                        className="relative px-5 py-1.5 rounded-full text-sm font-semibold transition-colors">
+                        className="relative px-4 sm:px-5 py-1.5 rounded-full text-sm font-semibold transition-colors">
                         {batch === b && <motion.span layoutId="hero-batch-pill" className="absolute inset-0 rounded-full bg-[#09090B]" transition={{ type: "spring", stiffness: 400, damping: 32 }} />}
                         <span className={`relative ${batch === b ? "text-white" : "text-[#09090B]/70"}`}>{b}</span>
                       </button>
@@ -148,7 +147,7 @@ export default function MarketingHome() {
 
               <StaggerItem>
                 <div className="mt-7 flex flex-wrap gap-3">
-                  <Link to={`/courses?t=${encodeURIComponent(batch)}`}>
+                  <Link to={`/signup?exam=${encodeURIComponent(examOf(batch))}`}>
                     <button data-testid="hero-enroll-btn" className="mkt-btn-primary group inline-flex items-center gap-2 px-8 py-4 text-base font-semibold">
                       Enroll for {batch}
                       <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
@@ -185,9 +184,10 @@ export default function MarketingHome() {
             >
               <div className="relative rounded-[28px] overflow-hidden border-[1.5px] border-[#09090B] shadow-[10px_10px_0_0_#0A66C2] mb-6">
                 <img
-                  src="https://images.unsplash.com/photo-1604177091072-b7b677a077f6?crop=entropy&cs=srgb&fm=jpg&q=85&w=1200"
-                  alt="Student practicing NEET mock tests"
-                  className="w-full h-[300px] sm:h-[340px] object-cover object-top"
+                  src="/hero-app.jpg"
+                  alt="FNJEE app — NEET and JEE mock tests, results and daily practice"
+                  width="1200" height="680"
+                  className="w-full h-[300px] sm:h-[340px] object-cover object-center"
                   loading="eager"
                 />
                 <div className="absolute inset-0 bg-gradient-to-t from-[#0F172A]/55 via-transparent to-transparent" aria-hidden="true" />
@@ -196,7 +196,7 @@ export default function MarketingHome() {
                 </div>
                 <div className="absolute bottom-4 left-4 text-white">
                   <div className="mkt-display font-semibold text-lg leading-tight drop-shadow">Practice that shows up on rank day</div>
-                  <div className="text-xs text-white/85">648/720 projected · Top 1%</div>
+                  <div className="text-xs text-white/85">NEET · JEE Main · JEE Advanced · Olympiads</div>
                 </div>
               </div>
               <motion.div animate={{ y: [0, -12, 0] }} transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}>
@@ -249,15 +249,6 @@ export default function MarketingHome() {
           </div>
         </div>
 
-        {/* Media marquee */}
-        <div className="relative border-y-[1.5px] border-[#09090B]/10 bg-white/60 py-5">
-          <div className="max-w-7xl mx-auto px-6 flex items-center gap-6">
-            <span className="mkt-mono text-[11px] font-bold uppercase tracking-[0.2em] text-[#52525B] shrink-0 hidden sm:block">Featured in</span>
-            <Marquee items={MEDIA} render={(m) => (
-              <span className="mkt-display text-xl font-semibold text-[#09090B]/35 hover:text-[#09090B] transition-colors px-8">{m}</span>
-            )} />
-          </div>
-        </div>
       </section>
 
       {/* ================= CBT PREVIEW ================= */}
@@ -284,7 +275,7 @@ export default function MarketingHome() {
           <div className="rounded-2xl border-[1.5px] border-[#09090B] bg-white p-4 shadow-[8px_8px_0_0_#09090B]">
             <div className="h-9 flex items-center gap-2 px-2 border-b-[1.5px] border-[#09090B]/10">
               <div className="flex gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-[#0A66C2]" /><span className="h-2.5 w-2.5 rounded-full bg-amber-400" /><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /></div>
-              <div className="mkt-mono text-[10px] text-[#52525B] ml-2">Candidate: <b className="text-[#09090B]">Kapil Gupta</b> · NEET</div>
+              <div className="mkt-mono text-[10px] text-[#52525B] ml-2">Candidate: <b className="text-[#09090B]">Kapil Gupta</b> · NEET / JEE</div>
               <div className="ml-auto mkt-mono text-xs font-bold text-[#0A66C2]">03:19:02</div>
             </div>
             <div className="grid grid-cols-12 gap-4 mt-4">
@@ -346,13 +337,13 @@ export default function MarketingHome() {
         </div>
       </section>
 
-      {/* ================= TOPPERS ================= */}
+      {/* ================= STUDENTS (no rank claims) ================= */}
       <section className="border-b-[1.5px] border-[#09090B]/10">
         <div className="max-w-7xl mx-auto px-6 py-20 lg:py-28">
           <Reveal className="max-w-3xl">
-            <div className="mkt-mono text-xs font-bold uppercase tracking-[0.2em] text-[#0A66C2]">NEET 2025 results</div>
-            <h2 className="mkt-display font-bold text-4xl sm:text-5xl mt-3">10,500+ students qualified NEET 2025.</h2>
-            <p className="text-[#52525B] mt-4 text-lg">Now at AIIMS Delhi · MAMC · AIIMS Bhopal & top govt medical colleges. 7,000+ govt-college seats since 2016.</p>
+            <div className="mkt-mono text-xs font-bold uppercase tracking-[0.2em] text-[#0A66C2]">Our students</div>
+            <h2 className="mkt-display font-bold text-4xl sm:text-5xl mt-3">NEET &amp; JEE aspirants who practise every day.</h2>
+            <p className="text-[#52525B] mt-4 text-lg">Daily MCQs, mocks and DPPs on FNJEE — the habit that moves a rank.</p>
           </Reveal>
           <Stagger className="mt-12 grid sm:grid-cols-2 lg:grid-cols-3 gap-5" gap={0.07}>
             {TOPPERS.map((t) => (
@@ -364,12 +355,9 @@ export default function MarketingHome() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="mkt-display font-semibold truncate">{t.name}</div>
-                      <div className="text-xs text-[#52525B]">{t.exam}</div>
+                      <div className="text-xs text-[#52525B]">{t.exam} aspirant</div>
                     </div>
-                    <div className="text-right">
-                      <div className="mkt-mono text-[10px] font-bold uppercase tracking-widest text-[#52525B]">AIR</div>
-                      <div className="mkt-display font-bold text-3xl text-[#0A66C2]">{t.air}</div>
-                    </div>
+                    <span className="rounded-full bg-[#0A66C2]/10 text-[#0A66C2] text-xs font-bold px-3 py-1 shrink-0">{t.exam.startsWith("JEE") ? "JEE" : "NEET"}</span>
                   </div>
                   <div className="mt-4 pt-4 border-t-[1.5px] border-[#09090B]/10 grid grid-cols-2 gap-2 text-sm">
                     <div><span className="text-[#52525B]">MCQs</span> <b className="ml-1">{t.mcqs}</b></div>
@@ -382,79 +370,12 @@ export default function MarketingHome() {
         </div>
       </section>
 
-      {/* ================= COURSES ================= */}
-      <section className="max-w-7xl mx-auto px-6 py-20 lg:py-28">
-        <div className="flex items-end justify-between gap-6 flex-wrap mb-10">
-          <Reveal className="max-w-2xl">
-            <div className="mkt-mono text-xs font-bold uppercase tracking-[0.2em] text-[#0A66C2]">Courses</div>
-            <h2 className="mkt-display font-bold text-4xl sm:text-5xl mt-3">Pick the batch that matches your year.</h2>
-          </Reveal>
-          <div className="flex border-[1.5px] border-[#09090B] rounded-full p-1 bg-white">
-            {["NEET 2027", "NEET 2028"].map((b) => (
-              <button key={b} onClick={() => setBatch(b)}
-                data-testid={`courses-batch-${b.replace(/\s+/g, "-").toLowerCase()}`}
-                className="relative px-5 py-1.5 rounded-full text-sm font-semibold transition-colors">
-                {batch === b && <motion.span layoutId="courses-batch-pill" className="absolute inset-0 rounded-full bg-[#09090B]" transition={{ type: "spring", stiffness: 400, damping: 32 }} />}
-                <span className={`relative ${batch === b ? "text-white" : "text-[#09090B]/70"}`}>{b}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-        <Stagger className="grid md:grid-cols-2 lg:grid-cols-3 gap-6" gap={0.08}>
-          {visible.slice(0, 3).map((c) => (
-            <StaggerItem key={c.slug}>
-              <div data-testid={`home-course-${c.slug}`}
-                className={`mkt-card mkt-card-hover mkt-card-volt p-6 flex flex-col relative h-full ${c.featured ? "!border-[#0A66C2]" : ""}`}>
-                {c.featured && (
-                  <span className="absolute -top-3 left-6 rounded-full bg-[#0A66C2] text-white text-xs font-bold px-3 py-1 inline-flex items-center gap-1">
-                    <Sparkles className="h-3 w-3" /> Most popular
-                  </span>
-                )}
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="rounded-full bg-[#09090B] text-white text-xs font-semibold px-3 py-1">{c.target}</span>
-                  <span className="rounded-full border-[1.5px] border-[#09090B]/15 text-xs font-medium px-3 py-1">{c.kind}</span>
-                </div>
-                <h3 className="mkt-display font-bold text-xl mt-4">{c.title}</h3>
-                <div className="mt-3 flex items-center gap-4 text-xs text-[#52525B]">
-                  <span className="flex items-center gap-1"><Users className="h-3.5 w-3.5" /> {c.enrolments}+ enrolled</span>
-                  <span className="flex items-center gap-1"><Star className="h-3.5 w-3.5 fill-current text-amber-500" /> {c.rating}</span>
-                </div>
-                <ul className="mt-4 space-y-1.5 text-sm flex-1">
-                  {c.highlights.slice(0, 4).map((h) => (
-                    <li key={h} className="flex items-start gap-2 text-[#09090B]/80"><span className="mt-2 h-1 w-1 rounded-full bg-[#0A66C2] shrink-0" />{h}</li>
-                  ))}
-                </ul>
-                <div className="mt-6 pt-6 border-t-[1.5px] border-[#09090B]/10">
-                  <div className="flex items-end gap-2">
-                    <div className="mkt-display font-bold text-3xl">₹{c.price.toLocaleString()}</div>
-                    <div className="text-sm text-[#52525B] line-through mb-1">₹{c.mrp.toLocaleString()}</div>
-                  </div>
-                  <div className="mt-3 flex gap-2">
-                    <Link to={`/courses/${c.slug}`} className="flex-1">
-                      <button className="w-full mkt-btn-primary py-3 font-semibold">Enroll now</button>
-                    </Link>
-                    <Link to={`/courses/${c.slug}`}>
-                      <button className="rounded-full border-[1.5px] border-[#09090B] px-5 py-3 font-semibold transition-all hover:bg-[#09090B] hover:text-white">Details</button>
-                    </Link>
-                  </div>
-                </div>
-              </div>
-            </StaggerItem>
-          ))}
-        </Stagger>
-        <div className="mt-8 flex flex-wrap items-center gap-4 text-xs text-[#52525B]">
-          <Link to="/courses" className="mkt-link text-[#0A66C2] font-bold">See all courses →</Link>
-          <span className="flex items-center gap-1.5"><ShieldCheck className="h-3.5 w-3.5" /> Secure checkout · UPI · VISA · RuPay</span>
-          <span className="flex items-center gap-1.5"><Clock className="h-3.5 w-3.5" /> 3-day full refund</span>
-        </div>
-      </section>
-
       {/* ================= FEATURE BENTO ================= */}
       <section className="bg-white border-y-[1.5px] border-[#09090B]/10">
         <div className="max-w-7xl mx-auto px-6 py-20 lg:py-28">
           <Reveal className="max-w-2xl mb-12">
             <div className="mkt-mono text-xs font-bold uppercase tracking-[0.2em] text-[#0A66C2]">What's inside</div>
-            <h2 className="mkt-display font-bold text-4xl sm:text-5xl mt-3">Six modules built for NEET rank.</h2>
+            <h2 className="mkt-display font-bold text-4xl sm:text-5xl mt-3">Six modules built for NEET &amp; JEE rank.</h2>
           </Reveal>
           <Stagger className="grid lg:grid-cols-12 gap-5" gap={0.07}>
             {FEATURES.map((f, i) => {
@@ -501,8 +422,8 @@ export default function MarketingHome() {
             </div>
             <div className="mt-4 space-y-3 text-sm">
               <div className="p-3 rounded-2xl bg-[#09090B]/5 max-w-[80%]"><b>Hi!</b> Which class are you in right now?</div>
-              <div className="p-3 rounded-2xl bg-[#0A66C2] text-white max-w-[80%] ml-auto">Class 12, targeting AIIMS</div>
-              <div className="p-3 rounded-2xl bg-[#09090B]/5 max-w-[80%]">Great! The Target AIIMS batch fits you best 👍</div>
+              <div className="p-3 rounded-2xl bg-[#0A66C2] text-white max-w-[80%] ml-auto">Class 12, targeting JEE Main 2027</div>
+              <div className="p-3 rounded-2xl bg-[#09090B]/5 max-w-[80%]">Great! The JEE 2027 batch fits you best 👍</div>
             </div>
           </div>
         </Reveal>
@@ -534,7 +455,7 @@ export default function MarketingHome() {
         <div className="relative max-w-7xl mx-auto px-6 py-24 lg:py-32 grid lg:grid-cols-2 gap-10 items-center">
           <Reveal>
             <h2 className="mkt-display font-bold text-4xl sm:text-6xl leading-[1.02]">Your rank starts with a single mock.</h2>
-            <p className="mt-5 text-white/60 max-w-lg text-lg">Sign up in 30 seconds. Take your first NEET-style CBT in 60. See your predicted AIR in 90.</p>
+            <p className="mt-5 text-white/60 max-w-lg text-lg">Sign up in 30 seconds. Take your first NEET / JEE-style CBT in 60. See your predicted AIR in 90.</p>
           </Reveal>
           <Reveal delay={0.15} className="flex flex-wrap gap-3 lg:justify-end">
             <Link to="/signup"><button data-testid="footer-cta-signup" className="mkt-btn-primary px-8 py-4 text-base font-semibold">Start free trial</button></Link>
@@ -596,7 +517,7 @@ function CounsellingForm() {
           <Select value={form.target_year} onValueChange={(v) => setForm({ ...form, target_year: v })}>
             <SelectTrigger data-testid="counselling-target" className="rounded-full mt-2 border-[1.5px] border-[#09090B]/20"><SelectValue /></SelectTrigger>
             <SelectContent>
-              {["NEET 2027", "NEET 2028", "AIIMS", "JIPMER"].map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+              {["NEET 2027", "NEET 2028", "JEE Main 2027", "JEE Advanced 2027", "JEE 2028", "Olympiad"].map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>

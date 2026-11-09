@@ -3,6 +3,7 @@ import { importApi } from "@/lib/api";
 import { Progress } from "@/components/ui/progress";
 import { Download, XCircle, Camera } from "lucide-react";
 import ScreenshotImport from "@/components/admin/ScreenshotImport";
+import AiExcelPrompt from "@/components/admin/AiExcelPrompt";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -336,6 +337,8 @@ export default function ImportWizard() {
               <Button type="button" variant="outline" className="rounded-full w-full sm:w-auto"><Download className="h-4 w-4 mr-2" /> Download sample Excel</Button>
             </a>
           </div>
+
+          <AiExcelPrompt />
 
           <div>
             <Label className="text-sm font-semibold">Supported formats</Label>

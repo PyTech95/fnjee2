@@ -5,7 +5,7 @@ import { useSEO } from "@/lib/useSEO";
 import { CITIES } from "@/lib/marketingData";
 import { MapPin, ChevronRight } from "lucide-react";
 
-const ORIGIN = "https://exam-builder-hub.emergent.host";
+const ORIGIN = "https://fnjee.com";
 
 export function CitiesIndex() {
   useSEO({
