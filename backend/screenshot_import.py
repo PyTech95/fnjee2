@@ -129,7 +129,7 @@ async def screenshots_to_questions(question_imgs: List[bytes], answer_imgs: List
     q_type = q_type if q_type in types else ""
     hint = (f"Subject hint: {subject or 'auto'}. Chapter hint: {chapter or 'auto'}. "
             + (f"Question type: {q_type} (use this type for every question). " if q_type else "")
-            f"{len(question_imgs)} QUESTION page(s) and {len(answer_imgs)} ANSWER page(s). "
+            + f"{len(question_imgs)} QUESTION page(s) and {len(answer_imgs)} ANSWER page(s). "
             + ("Read the correct answers and solutions from the ANSWER pages."
                if answer_imgs else "No answer screenshots were given: solve each question yourself, "
                                    "set answer_source='ai' and write a clear solution."))

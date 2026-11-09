@@ -351,6 +351,9 @@ async def delete_my_account(inp: DeleteAccountIn, request: Request, user: dict =
     # unlink parents / children
     await db.users.update_many({"child_ids": uid}, {"$pull": {"child_ids": uid}})
     await db.users.update_many({"parent_ids": uid}, {"$pull": {"parent_ids": uid}})
+    # tests only this user could see: their own drills are removed, anything else goes back to draft
+    await db.tests.delete_many({"assigned_to": [uid], "created_by": uid})
+    await db.tests.update_many({"assigned_to": [uid]}, {"$set": {"assigned_to": [], "draft": True}})
     await db.tests.update_many({"assigned_to": uid}, {"$pull": {"assigned_to": uid}})
     await db.users.delete_one({"id": uid})
     await db.account_deletions.insert_one({"id": new_id(), "role": user["role"], "deleted_at": now_iso()})
@@ -392,6 +395,10 @@ async def list_users(role: Optional[str] = None, user: dict = Depends(require_ro
 
 @api.get("/users/{uid}")
 async def get_user(uid: str, user: dict = Depends(get_current_user)):
+    allowed = (uid == user["id"] or user["role"] in ("admin", "teacher")
+               or uid in (user.get("child_ids") or []) or uid in (user.get("parent_ids") or []))
+    if not allowed:
+        raise HTTPException(403, "Not allowed")
     u = await db.users.find_one({"id": uid}, {"_id": 0, "password": 0})
     if not u: raise HTTPException(404, "Not found")
     return u
@@ -1617,8 +1624,9 @@ async def import_ai_difficulty(payload: dict, user: dict = Depends(require_role(
 async def list_tests(user: dict = Depends(get_current_user)):
     q: dict = {}
     if user["role"] == "student":
-        # assigned to me, or an open (unassigned) admin test — a teacher's paper stays private until assigned
-        q = {"$or": [{"assigned_to": user["id"]}, {"assigned_to": [], "created_by_role": {"$nin": ["teacher"]}}]}
+        # assigned to me, or an open (unassigned) test — a teacher's new paper is a draft until it is assigned
+        q = {"$or": [{"assigned_to": user["id"]}, {"assigned_to": [], "draft": {"$ne": True}, "personal": {"$ne": True}}],
+             "published": {"$ne": False}}
     elif user["role"] == "parent":
         q = {"created_by": user["id"]}
     elif user["role"] == "teacher":
@@ -1633,7 +1641,10 @@ async def list_tests(user: dict = Depends(get_current_user)):
 async def _attach_test_content(tests: list):
     """Every test card shows what it covers (subjects + chapters) — meeting 9 Nov: a student must
     know which subject/chapter a drill or retest is about. Computed once, then cached on the test."""
-    todo = [t for t in tests if not isinstance(t.get("content"), dict)]
+    stale_before = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()   # re-tagged questions show up
+    todo = [t for t in tests if not isinstance(t.get("content"), dict)
+            or t["content"].get("n") != len(t.get("question_ids") or [])
+            or (t["content"].get("at") or "") < stale_before]
     ids = list({qid for t in todo for qid in (t.get("question_ids") or [])})
     if not ids:
         return
@@ -1651,8 +1662,10 @@ async def _attach_test_content(tests: list):
                 chap[c] = chap.get(c, 0) + 1
         content = {"subjects": [k for k, _ in sorted(subj.items(), key=lambda kv: -kv[1])],
                    "chapters": [k for k, _ in sorted(chap.items(), key=lambda kv: -kv[1])][:6],
-                   "chapter_count": len(chap)}
+                   "chapter_count": len(chap), "n": len(t.get("question_ids") or []), "at": now_iso()}
         t["content"] = content
+        if not subj:          # nothing tagged yet — compute again next time instead of caching an empty card
+            continue
         try:
             await db.tests.update_one({"id": t["id"]}, {"$set": {"content": content}})
         except Exception:
@@ -1671,6 +1684,9 @@ async def get_test(tid: str, include_questions: bool = False, user: dict = Depen
         if user["role"] == "student":
             submitted = await db.attempts.find_one(
                 {"test_id": tid, "user_id": user["id"], "status": "submitted"}, {"_id": 1})
+            gate = _student_gate(t, user)
+            if gate and not submitted:
+                raise HTTPException(403, gate)
             reveal_solutions = bool(submitted) and t.get("show_solutions_after", True)
             safe_qs = []
             for q in qs:
@@ -1696,6 +1712,8 @@ async def create_test(inp: TestIn, user: dict = Depends(get_current_user)):
         total = sum(q.get("marks", 4) for q in qs)
     doc.update({"id": new_id(), "created_at": now_iso(), "created_by": user["id"],
                 "created_by_role": user["role"], "total_marks": doc.get("total_marks") or total})
+    if user["role"] == "teacher" and not doc.get("assigned_to"):
+        doc["draft"] = True    # a teacher's paper stays private until it is assigned to students
     await db.tests.insert_one(doc)
     return clean(doc)
 
@@ -1725,7 +1743,8 @@ async def random_test_builder(payload: dict, user: dict = Depends(get_current_us
 @api.post("/tests/assign")
 async def assign_test(inp: AssignTestIn, user: dict = Depends(require_role('admin', 'teacher'))):
     """Admin or the teacher who made the paper assigns it to chosen students, optionally from a date/time."""
-    t = await db.tests.find_one({"id": inp.test_id}, {"_id": 0, "id": 1, "title": 1, "created_by": 1, "assigned_to": 1})
+    t = await db.tests.find_one({"id": inp.test_id}, {"_id": 0, "id": 1, "title": 1, "created_by": 1, "assigned_to": 1,
+                                                      "created_by_role": 1, "draft": 1})
     if not t: raise HTTPException(404, "Test not found")
     if user["role"] == "teacher" and t.get("created_by") != user["id"]:
         raise HTTPException(403, "You can only assign your own papers")
@@ -1735,11 +1754,12 @@ async def assign_test(inp: AssignTestIn, user: dict = Depends(require_role('admi
     upd: dict = {"updated_at": now_iso()}
     if inp.starts_at is not None:
         upd["starts_at"] = inp.starts_at or None
-    if inp.replace:
-        upd["assigned_to"] = ids
-        await db.tests.update_one({"id": inp.test_id}, {"$set": upd})
-    else:
-        await db.tests.update_one({"id": inp.test_id}, {"$set": upd, "$addToSet": {"assigned_to": {"$each": ids}}})
+    final_ids = ids if inp.replace else list(dict.fromkeys((t.get("assigned_to") or []) + ids))
+    if t.get("created_by_role") == "teacher" or t.get("draft"):
+        # a teacher's paper with nobody assigned goes back to draft (never open to every student)
+        upd["draft"] = not final_ids
+    upd["assigned_to"] = final_ids
+    await db.tests.update_one({"id": inp.test_id}, {"$set": upd})
     new = [i for i in ids if i not in (t.get("assigned_to") or [])]
     when = ""
     if inp.starts_at:
@@ -1760,6 +1780,15 @@ async def students_directory(user: dict = Depends(require_role('admin', 'teacher
     """Students a teacher/admin can assign work to (no private fields)."""
     return await db.users.find({"role": "student"}, {"_id": 0, "id": 1, "name": 1, "email": 1, "exam_target": 1,
                                                        "student_class": 1}).sort("name", 1).to_list(5000)
+
+
+def _student_gate(t: dict, user: dict) -> Optional[str]:
+    """Why a student can't open this test right now (None = allowed)."""
+    if user.get("role") != "student":
+        return None
+    if user["id"] not in (t.get("assigned_to") or []) and (t.get("draft") or t.get("personal")):
+        return "This test isn't available to you."
+    return _not_open_yet(t)
 
 
 def _not_open_yet(t: dict) -> Optional[str]:
@@ -1813,7 +1842,7 @@ async def parent_assign(inp: ParentAssignIn, user: dict = Depends(require_role('
 async def start_attempt(inp: AttemptStartIn, user: dict = Depends(require_role('student'))):
     t = await db.tests.find_one({"id": inp.test_id}, {"_id": 0})
     if not t: raise HTTPException(404, "Test not found")
-    msg = _not_open_yet(t)
+    msg = _student_gate(t, user)
     if msg: raise HTTPException(400, msg)
     existing = await db.attempts.find_one({"test_id": inp.test_id, "user_id": user["id"], "status": "in_progress"}, {"_id": 0})
     if existing: return existing
@@ -1830,6 +1859,99 @@ async def start_attempt(inp: AttemptStartIn, user: dict = Depends(require_role('
     await db.attempts.insert_one(a)
     a.pop("_id", None)
     return a
+
+
+async def _first_attempt_per_student(test_id: str, exclude_user: Optional[str] = None) -> list:
+    """One submitted attempt (the first) per student — retakes must not count as extra peers."""
+    rows = await db.attempts.find({"test_id": test_id, "status": "submitted"},
+                                  {"_id": 0, "user_id": 1, "score": 1, "submitted_at": 1, "id": 1, "detailed": 1,
+                                   "total_marks": 1, "time_taken_seconds": 1}).sort("submitted_at", 1).to_list(20000)
+    seen, out = set(), []
+    for r in rows:
+        uid = r.get("user_id")
+        if uid in seen or (exclude_user and uid == exclude_user):
+            continue
+        seen.add(uid); out.append(r)
+    return out
+
+
+async def after_submit(user: dict, t: dict, final: dict, qmap: dict):
+    """Everything that follows a submitted attempt — same for the classic exam screen and the CBT screen:
+    spaced-repetition queue, coins + streak (first attempt only), result email, parent alert."""
+    now = datetime.now(timezone.utc)
+    await sync_reviews_from_attempt(user["id"], final.get("detailed") or [], qmap)
+    # Personal (self-made) quizzes don't award coins — keeps the leaderboard fair.
+    bonus = 0
+    if not t.get("personal") and not t.get("is_demo"):
+        # Coins only for the first submission of a test — free retakes must not farm coins.
+        earlier = await db.attempts.find_one({"user_id": user["id"], "test_id": t["id"], "status": "submitted",
+                                              "id": {"$ne": final["id"]}}, {"_id": 0, "id": 1})
+        coins = 0 if earlier else int(max(final.get("score", 0) or 0, 0))
+        # Date-aware streak: only count one study-day per calendar day.
+        today = now.date()
+        last_day = user.get("last_study_date")
+        cur_streak = int(user.get("streak_days", 0) or 0)
+        if last_day == today.isoformat():
+            new_streak = cur_streak or 1
+        elif last_day == (today - timedelta(days=1)).isoformat():
+            new_streak = cur_streak + 1
+        else:
+            new_streak = 1
+        # Streak milestones: bonus coins + a permanent badge.
+        MILESTONES = {3: (0, "3-Day Streak", "flame"), 7: (50, "Week Warrior", "trophy"),
+                      30: (200, "Month Master", "medal"), 100: (500, "Century Streak", "crown")}
+        badge = None
+        if new_streak != cur_streak and new_streak in MILESTONES:
+            bonus, bname, bicon = MILESTONES[new_streak]
+            badge = {"name": bname, "icon": bicon, "milestone": new_streak}
+        upd = {"$inc": {"reward_coins": coins + bonus},
+               "$set": {"streak_days": new_streak, "last_study_date": today.isoformat(), "last_active": now_iso()}}
+        if badge:
+            upd["$addToSet"] = {"earned_badges": badge}
+        await db.users.update_one({"id": user["id"]}, upd)
+        if badge:
+            msg = f"🔥 {new_streak}-day streak! Earned the '{badge['name']}' badge" + (f" +{bonus} coins" if bonus else "")
+            await db.notifications.insert_one({"id": new_id(), "user_id": user["id"], "type": "streak_bonus",
+                "message": msg, "created_at": now_iso(), "read": False})
+    # Post-submit emails & alerts (fire-and-forget, never blocks submit).
+    try:
+        peers = await _first_attempt_per_student(t["id"], exclude_user=user["id"])
+        total_peers = len(peers)
+        beat = sum(1 for s in peers if final.get("score", 0) > s.get("score", 0))
+        rank = {"percentile": round(beat / total_peers * 100) if total_peers else 50, "beat": beat, "total": total_peers}
+        top_score = max((s.get("score", 0) for s in peers), default=final.get("score", 0))
+        topper = {"top_score": top_score, "total": final.get("total_marks", 0)}
+        this_pct = (final.get("score", 0) / max(final.get("total_marks", 1), 1)) * 100
+        # 1) Result email to the candidate (respects toggle) with a retake CTA
+        if user.get("email_results_enabled", True):
+            from email_utils import send_result_email
+            app_url = os.environ.get("APP_BASE_URL", "").rstrip("/")
+            retake_url = f"{app_url}/student/cbt/{t['id']}?retake=1" if app_url else None
+            coach_input = dict(final); coach_input["test_title"] = t.get("title", "")
+            async def _coach_then_email():
+                coach = await generate_coach(coach_input, qmap)
+                await send_result_email(user, t, final, qmap, rank, topper, retake_url, coach)
+            asyncio.create_task(_coach_then_email())
+        else:
+            coach_input = dict(final); coach_input["test_title"] = t.get("title", "")
+            asyncio.create_task(generate_coach(coach_input, qmap))
+        # 2) Parent alert on a sharp score drop vs the student's recent average
+        prior = await db.attempts.find(
+            {"user_id": user["id"], "status": "submitted", "id": {"$ne": final["id"]}},
+            {"_id": 0, "score": 1, "total_marks": 1}).sort("submitted_at", -1).limit(5).to_list(5)
+        if prior and (user.get("parent_ids") or []):
+            prior_pcts = [(p.get("score", 0) / max(p.get("total_marks", 1), 1)) * 100 for p in prior]
+            prior_avg = sum(prior_pcts) / len(prior_pcts)
+            drop = prior_avg - this_pct
+            from email_utils import send_parent_alert_email
+            parents = await db.users.find({"id": {"$in": user.get("parent_ids") or []}}, {"_id": 0}).to_list(20)
+            for p in parents:
+                if p.get("alert_mode", "instant") == "weekly":
+                    continue
+                if drop >= int(p.get("alert_drop_threshold", 15)):
+                    asyncio.create_task(send_parent_alert_email(p, user, t, round(this_pct), round(prior_avg)))
+    except Exception as e:
+        log.warning("Post-submit email/alerts failed: %s", e)
 
 
 @api.post("/attempts/submit")
@@ -1901,77 +2023,8 @@ async def submit_attempt(inp: AttemptSubmitIn, request: Request, user: dict = De
            "late_submission": late_submission, "time_taken_seconds": time_taken_seconds,
            "total_marks": t.get("total_marks", 0), "detailed": detailed, "subject_stats": subject_stats}
     await db.attempts.update_one({"id": inp.attempt_id}, {"$set": upd})
-    await sync_reviews_from_attempt(user["id"], detailed, qmap)
-    # Personal (self-made) quizzes don't award coins — keeps the leaderboard fair.
-    bonus = 0
-    if not t.get("personal"):
-        coins = int(max(score, 0))
-        # Date-aware streak: only count one study-day per calendar day.
-        today = now.date()
-        last_day = user.get("last_study_date")
-        cur_streak = int(user.get("streak_days", 0) or 0)
-        if last_day == today.isoformat():
-            new_streak = cur_streak or 1
-        elif last_day == (today - timedelta(days=1)).isoformat():
-            new_streak = cur_streak + 1
-        else:
-            new_streak = 1
-        # Streak milestones: bonus coins + a permanent badge.
-        MILESTONES = {3: (0, "3-Day Streak", "flame"), 7: (50, "Week Warrior", "trophy"),
-                      30: (200, "Month Master", "medal"), 100: (500, "Century Streak", "crown")}
-        badge = None
-        if new_streak != cur_streak and new_streak in MILESTONES:
-            bonus, bname, bicon = MILESTONES[new_streak]
-            badge = {"name": bname, "icon": bicon, "milestone": new_streak}
-        upd = {"$inc": {"reward_coins": coins + bonus},
-               "$set": {"streak_days": new_streak, "last_study_date": today.isoformat(), "last_active": now_iso()}}
-        if badge:
-            upd["$addToSet"] = {"earned_badges": badge}
-        await db.users.update_one({"id": user["id"]}, upd)
-        if badge:
-            msg = f"🔥 {new_streak}-day streak! Earned the '{badge['name']}' badge" + (f" +{bonus} coins" if bonus else "")
-            await db.notifications.insert_one({"id": new_id(), "user_id": user["id"], "type": "streak_bonus",
-                "message": msg, "created_at": now_iso(), "read": False})
     final = await db.attempts.find_one({"id": inp.attempt_id}, {"_id": 0})
-    # Post-submit emails & alerts (fire-and-forget, never blocks submit).
-    try:
-        peers = await db.attempts.find({"test_id": a["test_id"], "status": "submitted"}, {"_id": 0, "score": 1}).to_list(5000)
-        total_peers = len(peers)
-        beat = sum(1 for s in peers if final.get("score", 0) > s.get("score", 0))
-        rank = {"percentile": round(beat / total_peers * 100) if total_peers else 50, "beat": beat, "total": total_peers}
-        top_score = max((s.get("score", 0) for s in peers), default=final.get("score", 0))
-        topper = {"top_score": top_score, "total": final.get("total_marks", 0)}
-        this_pct = (final.get("score", 0) / max(final.get("total_marks", 1), 1)) * 100
-        # 1) Result email to the candidate (respects toggle) with a retake CTA
-        if user.get("email_results_enabled", True):
-            from email_utils import send_result_email
-            app_url = os.environ.get("APP_BASE_URL", "").rstrip("/")
-            retake_url = f"{app_url}/student/exam/{a['test_id']}" if app_url else None
-            coach_input = dict(final); coach_input["test_title"] = t.get("title", "")
-            async def _coach_then_email():
-                coach = await generate_coach(coach_input, qmap)
-                await send_result_email(user, t, final, qmap, rank, topper, retake_url, coach)
-            asyncio.create_task(_coach_then_email())
-        else:
-            coach_input = dict(final); coach_input["test_title"] = t.get("title", "")
-            asyncio.create_task(generate_coach(coach_input, qmap))
-        # 2) Parent alert on a sharp score drop vs the student's recent average
-        prior = await db.attempts.find(
-            {"user_id": user["id"], "status": "submitted", "id": {"$ne": final["id"]}},
-            {"_id": 0, "score": 1, "total_marks": 1}).sort("submitted_at", -1).limit(5).to_list(5)
-        if prior and (user.get("parent_ids") or []):
-            prior_pcts = [(p.get("score", 0) / max(p.get("total_marks", 1), 1)) * 100 for p in prior]
-            prior_avg = sum(prior_pcts) / len(prior_pcts)
-            drop = prior_avg - this_pct
-            from email_utils import send_parent_alert_email
-            parents = await db.users.find({"id": {"$in": user.get("parent_ids") or []}}, {"_id": 0}).to_list(20)
-            for p in parents:
-                if p.get("alert_mode", "instant") == "weekly":
-                    continue
-                if drop >= int(p.get("alert_drop_threshold", 15)):
-                    asyncio.create_task(send_parent_alert_email(p, user, t, round(this_pct), round(prior_avg)))
-    except Exception as e:
-        log.warning("Post-submit email/alerts failed: %s", e)
+    await after_submit(user, t, final, qmap)
     return final
 
 
@@ -2204,8 +2257,8 @@ async def list_announcements(user: dict = Depends(get_current_user)):
 
 @api.get("/analytics/test-percentile/{tid}")
 async def test_percentile(tid: str, score: float, user: dict = Depends(get_current_user)):
-    """Return the percentile of `score` among all submitted attempts on this test."""
-    scores = await db.attempts.find({"test_id": tid, "status": "submitted"}, {"_id": 0, "score": 1}).to_list(5000)
+    """Percentile of `score` among other students' first attempts on this test (retakes don't count twice)."""
+    scores = await _first_attempt_per_student(tid, exclude_user=user["id"])
     total = len(scores)
     if total == 0: return {"percentile": 50, "beat": 0, "total": 0}
     beat = sum(1 for s in scores if score > s.get("score", 0))
@@ -2832,10 +2885,19 @@ COURSE_SEEDS = [
 
 async def _ensure_courses():
     """Seed the catalog, and add any seed course that an older database is missing (by slug)."""
+    global _courses_checked
+    if _courses_checked is db:       # checked once per process (per database)
+        return
     have = set(await db.courses.distinct("slug"))
     for c in COURSE_SEEDS:
         if c["slug"] not in have:
-            await db.courses.insert_one({**c, "id": new_id(), "created_at": now_iso()})
+            # upsert by slug: two first requests at once can't create the same course twice
+            await db.courses.update_one({"slug": c["slug"]},
+                                        {"$setOnInsert": {**c, "id": new_id(), "created_at": now_iso()}}, upsert=True)
+    _courses_checked = db
+
+
+_courses_checked = None
 
 
 @api.get("/courses")
@@ -3036,7 +3098,7 @@ async def apply_answer_key(inp: AnswerKeyIn, user: dict = Depends(require_role('
 
 
 # ---------- Chapter Playlist ----------
-@api.get("/playlist/{subject}/{chapter}")
+@api.get("/playlist/{subject}/{chapter:path}")
 async def chapter_playlist(subject: str, chapter: str, user: dict = Depends(get_current_user)):
     """Return a bundled 25-min chapter revision playlist: DPP quick-set + flashcards + mindmap."""
     if await db.flashcards.count_documents({}) == 0:
@@ -3138,12 +3200,15 @@ async def practice_chapters(user: dict = Depends(get_current_user)):
     """Approved questions per subject → class → chapter → topic, for students' and parents'
     "practice / assign by chapter" pickers. Only chapters that actually have questions are listed."""
     rows = await db.questions.aggregate([
-        {"$match": {"status": "approved", "personal": {"$ne": True}, "chapter": {"$nin": [None, ""]}}},
+        {"$match": {"status": "approved", "personal": {"$ne": True}, "chapter": {"$nin": [None, ""]},
+                    "subject": {"$nin": [None, ""]}}},
         {"$group": {"_id": {"s": "$subject", "c": "$student_class", "ch": "$chapter", "t": "$topic"}, "n": {"$sum": 1}}},
     ]).to_list(50000)
     tree: dict = {}
     for r in rows:
         k = r["_id"]; s_, c, ch, t = (str(k.get(x) or "") for x in ("s", "c", "ch", "t"))
+        if not s_.strip() or not ch.strip():
+            continue
         node = tree.setdefault((s_, ch), {"subject": s_, "chapter": ch, "classes": set(), "count": 0, "topics": {}})
         node["count"] += r["n"]
         if c: node["classes"].add(c)
@@ -3226,9 +3291,15 @@ async def question_usage(qid: str, user: dict = Depends(require_role('admin', 't
     if not q: raise HTTPException(404, "Question not found")
     tests = await db.tests.find({"question_ids": qid}, {"_id": 0, "id": 1, "title": 1}).to_list(500)
     test_ids = [t["id"] for t in tests]
-    attempts = await db.attempts.find({"test_id": {"$in": test_ids}, "status": "submitted"}, {"_id": 0, "detailed": 1}).to_list(5000)
+    attempts = await db.attempts.find({"test_id": {"$in": test_ids}, "status": "submitted"},
+                                      {"_id": 0, "detailed": 1, "user_id": 1, "test_id": 1}).sort("submitted_at", 1).to_list(5000)
     attempted = correct = wrong = 0
+    seen_pairs = set()
     for a in attempts:
+        key = (a.get("user_id"), a.get("test_id"))
+        if key in seen_pairs:      # a retake is not a new student
+            continue
+        seen_pairs.add(key)
         for d in (a.get("detailed") or []):
             if d.get("question_id") == qid:
                 attempted += 1
@@ -3246,7 +3317,7 @@ async def test_question_analysis(tid: str, user: dict = Depends(require_role('ad
     if not t: raise HTTPException(404, "Test not found")
     if user["role"] == "teacher" and t.get("created_by") != user["id"]:
         raise HTTPException(403, "Not your test")
-    attempts = await db.attempts.find({"test_id": tid, "status": "submitted"}, {"_id": 0}).to_list(5000)
+    attempts = await _first_attempt_per_student(tid)   # one (first) attempt per student
     qs = await db.questions.find({"id": {"$in": t.get("question_ids", [])}}, {"_id": 0}).to_list(1000)
     qmap = {q["id"]: q for q in qs}
     stats: dict = {qid: {"correct": 0, "wrong": 0, "attempted": 0} for qid in t.get("question_ids", [])}
@@ -4642,7 +4713,7 @@ app.include_router(api)
 
 # DigiALM-style CBT examination module (self-contained add-on).
 from cbt import register_cbt
-register_cbt(app, db, get_current_user, require_role)
+register_cbt(app, db, get_current_user, require_role, on_submit=after_submit, gate=_student_gate)
 
 app.add_middleware(
     CORSMiddleware,
@@ -4701,10 +4772,23 @@ async def _startup():
     await db.attempts.create_index([("user_id", 1), ("status", 1)])
     await db.attempts.create_index([("test_id", 1), ("status", 1)])
     await db.error_logs.create_index([("ts", -1)])
+    try:
+        await db.courses.create_index("slug", unique=True)
+    except Exception as e:
+        log.warning("courses.slug index skipped: %s", e)
     # CBT: one live attempt per (test, user); fast response lookups.
     try:
         await db.cbt_attempts.create_index(
             [("test_id", 1), ("user_id", 1), ("status", 1)])
+    except Exception:
+        pass
+    try:
+        await db.cbt_attempts.create_index(
+            [("test_id", 1), ("user_id", 1)], unique=True, name="one_live_attempt",
+            partialFilterExpression={"status": "in_progress"})
+    except Exception as e:
+        log.warning("one_live_attempt index skipped: %s", e)
+    try:
         await db.cbt_responses.create_index(
             [("attempt_id", 1), ("question_id", 1)], unique=True)
     except Exception:
@@ -4718,12 +4802,13 @@ async def _startup():
     scheduler.start(_run_weekly_digests, _run_study_reminders)
     await load_ai_cfg(db)
     log.info(f"AI key source: {ai_status()['source']} provider={ai_status()['provider']}")
-    if await db.users.count_documents({}) == 0:
+    fresh = await db.users.count_documents({}) == 0
+    if fresh:
         from seed_data import run_seed
         await run_seed(db)
         log.info("Demo data seeded")
-    # ensure a demo teacher exists (idempotent — for DBs seeded before the teacher role existed)
-    if await db.users.count_documents({"role": "teacher"}) == 0:
+    # demo teacher with a known password only on a brand-new demo database (never added to a live one)
+    if fresh and await db.users.count_documents({"role": "teacher"}) == 0:
         await db.users.insert_one({
             "id": new_id(), "name": "Rahul Mehta (Teacher)", "email": "teacher1@examnest.io",
             "password": hash_pw("Teacher@123"), "role": "teacher", "created_at": now_iso(),

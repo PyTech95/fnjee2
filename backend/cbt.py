@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 from collections import OrderedDict
-import uuid, logging
+import asyncio, uuid, logging
 
 log = logging.getLogger("cbt")
 LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H"]
@@ -99,7 +99,9 @@ def _parse_float(val: str):
         return None
 
 
-def register_cbt(app, db, get_current_user, require_role):
+def register_cbt(app, db, get_current_user, require_role, on_submit=None, gate=None):
+    """on_submit(user, test, result, qmap): coins, streak, revision queue, emails — shared with the classic exam.
+    gate(test, user) -> reason a student may not open the test yet (draft / opens later), or None."""
     router = APIRouter(prefix="/api/cbt")
 
     # ---------- request models ----------
@@ -149,6 +151,11 @@ def register_cbt(app, db, get_current_user, require_role):
             raise HTTPException(404, "Exam not found")
         if test.get("published") is False and user["role"] == "student":
             raise HTTPException(403, "This exam is not published yet.")
+        if gate and user["role"] == "student":
+            why = gate(test, user)
+            if why and not await db.attempts.find_one(
+                    {"test_id": tid, "user_id": user["id"], "status": "submitted"}, {"_id": 1}):
+                raise HTTPException(403, why)
         qmap, order = await _load_test_questions(test)
 
         # Group dynamically: subject -> section -> [qid].
@@ -228,19 +235,10 @@ def register_cbt(app, db, get_current_user, require_role):
             raise HTTPException(404, "Exam not found")
         if test.get("published") is False:
             raise HTTPException(403, "This exam is not published yet.")
-        st = test.get("starts_at")
-        if st:
-            try:
-                d = datetime.fromisoformat(str(st).replace("Z", "+00:00"))
-                if d.tzinfo is None:
-                    d = d.replace(tzinfo=timezone.utc)
-                if d > datetime.now(timezone.utc):
-                    ist = d.astimezone(timezone(timedelta(hours=5, minutes=30)))
-                    raise HTTPException(400, f"This test opens on {ist.strftime('%d %b %Y, %I:%M %p')} IST")
-            except HTTPException:
-                raise
-            except Exception:
-                pass
+        if gate:
+            why = gate(test, user)
+            if why:
+                raise HTTPException(400, why)
 
         # Demo exam: always let the candidate retake it — clear any prior
         # attempt/responses for this user so /demo can be experienced repeatedly.
@@ -492,6 +490,21 @@ def register_cbt(app, db, get_current_user, require_role):
             if res:
                 return res
 
+        # Claim the attempt (double click / submit + timer expiry at once -> exactly one result).
+        result_id = _new_id()
+        claim = await db.cbt_attempts.update_one(
+            {"id": a["id"], "status": "in_progress", "result_id": None}, {"$set": {"result_id": result_id}})
+        owner = claim.modified_count == 1
+        if not owner:
+            for _ in range(40):            # another request is finishing it — wait for its result
+                cur = await db.cbt_attempts.find_one({"id": a["id"]}, {"_id": 0})
+                if cur and cur.get("status") == "submitted" and cur.get("result_id"):
+                    res = await db.attempts.find_one({"id": cur["result_id"]}, {"_id": 0})
+                    if res:
+                        return res
+                await asyncio.sleep(0.25)
+            cur = await db.cbt_attempts.find_one({"id": a["id"]}, {"_id": 0}) or {}
+            result_id = cur.get("result_id") or result_id   # stale claim (crashed mid-way) -> finish it here
         test = await db.tests.find_one({"id": a["test_id"]}, {"_id": 0})
         qmap, order = await _load_test_questions(test)
         resps = {r["question_id"]: r for r in
@@ -544,7 +557,6 @@ def register_cbt(app, db, get_current_user, require_role):
         except Exception:
             time_taken = None
 
-        result_id = _new_id()
         result_doc = {
             "id": result_id,
             "test_id": a["test_id"],
@@ -566,11 +578,18 @@ def register_cbt(app, db, get_current_user, require_role):
             "detailed": detailed,
             "subject_stats": subject_stats,
         }
-        await db.attempts.insert_one(result_doc)
+        await db.attempts.replace_one({"id": result_id}, result_doc, upsert=True)
         await db.cbt_attempts.update_one(
             {"id": a["id"]},
             {"$set": {"status": "submitted", "submitted_at": now.isoformat(), "result_id": result_id}})
         result_doc.pop("_id", None)
+        if on_submit and owner:
+            try:
+                student = await db.users.find_one({"id": a["user_id"]}, {"_id": 0, "password": 0})
+                if student:
+                    await on_submit(student, test, result_doc, qmap)
+            except Exception as e:
+                log.warning("CBT post-submit (coins/revision/emails) failed: %s", e)
         return result_doc
 
     @router.post("/attempts/{aid}/submit")

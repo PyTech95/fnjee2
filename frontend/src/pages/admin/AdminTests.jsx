@@ -50,7 +50,7 @@ export default function AdminTests() {
                 <TableCell><Badge variant="secondary" className="rounded-full">{r.exam_type}</Badge></TableCell>
                 <TableCell>{r.duration_minutes} min</TableCell>
                 <TableCell className="text-right">{r.question_ids?.length || 0}</TableCell>
-                <TableCell className="text-right">{r.assigned_to?.length || "All"}{r.starts_at ? <div className="text-[11px] text-muted-foreground">opens {new Date(r.starts_at).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}</div> : null}</TableCell>
+                <TableCell className="text-right">{r.assigned_to?.length || (r.draft ? <span className="text-amber-600">Draft</span> : (r.personal ? "Own" : "All"))}{r.starts_at ? <div className="text-[11px] text-muted-foreground">opens {new Date(r.starts_at).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}</div> : null}</TableCell>
                 <TableCell className="text-right space-x-1">
                   <Button data-testid={`assign-test-${r.id}`} size="icon" variant="ghost" onClick={() => setActive(r)}>
                     <UserPlus className="h-4 w-4" />

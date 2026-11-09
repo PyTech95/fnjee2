@@ -21,6 +21,7 @@ export default function StudentLiveClasses() {
   const join = async (c) => {
     const inApp = isNativeApp();
     const win = inApp ? null : window.open("about:blank", "_blank");
+    if (win) { try { win.opener = null; } catch { /* cross-origin later — fine */ } }
     try {
       const r = await liveClassesApi.join(c.id);
       if (!r?.meeting_url) throw new Error("No meeting link for this class yet");

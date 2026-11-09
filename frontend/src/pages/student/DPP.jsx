@@ -123,7 +123,7 @@ export default function DPP() {
               </div>
             </div>
 
-            <div className="flex gap-3 pt-2">
+            <div className="flex flex-wrap gap-3 pt-2">
               <Button data-testid="dpp-generate-btn" onClick={() => generate(!!today?.exists)} disabled={busy} className="rounded-full">
                 {busy ? "Building…" : today?.exists ? "Regenerate today's set" : "Generate today's DPP"}
               </Button>

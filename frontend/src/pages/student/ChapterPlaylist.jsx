@@ -43,7 +43,9 @@ export default function ChapterPlaylist() {
     setStarting(true);
     try {
       // a chapter-only practice set (does not replace today's DPP)
-      const t = await practiceApi.generate({ subjects: [playlist.subject], chapters: [playlist.chapter], count: 10, allow_repeat: true });
+      // the exact chapter names of this playlist's questions (the bank may say "Laws of Motion (Class 11)")
+      const chs = [...new Set(playlist.steps[0].questions.map((q) => q.chapter).filter(Boolean))];
+      const t = await practiceApi.generate({ subjects: [playlist.subject], chapters: chs.length ? chs : [playlist.chapter], count: 10, allow_repeat: true });
       nav(`/student/cbt/${t.id}`);
     } catch (e) { toast.error(e?.response?.data?.detail || "Could not start DPP"); setStarting(false); }
   };

@@ -23,7 +23,7 @@ Rules
 6. Correct Answer: A, B, C or D (multiple correct: A,C). Integer type: the number. Use the answer key if the paper has one; otherwise solve the question.
 7. Solution: a short step-by-step explanation (2–5 lines).
 8. Difficulty: Easy, Medium or Hard. Marks 4 and Negative Marks 1 unless the paper says otherwise. Language: English or Hindi. Status: Approved.
-9. If a question needs a diagram/figure, write DIAGRAM in the Question Image cell (we attach the picture later).
+9. If a question needs a diagram/figure, write DIAGRAM in the Question Image cell and set its Status to Review (it stays hidden from students until the picture is attached).
 10. Leave a cell empty when you don't know it — never invent a PYQ year or source.
 
 The paper is attached (or pasted below):`;

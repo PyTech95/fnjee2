@@ -49,7 +49,9 @@ export default function TeacherPapers() {
                 <div className="text-xs mt-2 flex flex-wrap items-center gap-2" data-testid={`paper-assigned-${t.id}`}>
                   {(t.assigned_to || []).length
                     ? <span className="text-emerald-600 font-medium">Assigned to {t.assigned_to.length} student{t.assigned_to.length === 1 ? "" : "s"}</span>
-                    : <span className="text-amber-600 font-medium">Not assigned yet — students can't see it</span>}
+                    : t.draft
+                      ? <span className="text-amber-600 font-medium">Not assigned yet — students can't see it</span>
+                      : <span className="text-muted-foreground font-medium">Open to all students</span>}
                   {t.starts_at && <span className="text-muted-foreground flex items-center gap-1"><CalendarClock className="h-3 w-3" /> opens {new Date(t.starts_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</span>}
                 </div>
               </div>

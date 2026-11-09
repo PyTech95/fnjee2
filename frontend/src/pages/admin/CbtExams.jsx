@@ -65,7 +65,7 @@ export default function CbtExams() {
             <Badge className={`rounded-full ${ex.published ? "bg-green-600" : "bg-slate-400"}`} data-testid={`cbt-published-${ex.id}`}>
               {ex.published ? "Live" : "Draft"}
             </Badge>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Button variant="outline" size="sm" className="rounded-full" onClick={() => validate(ex)} disabled={busyId === ex.id} data-testid={`cbt-validate-${ex.id}`}>
                 <ClipboardCheck className="h-4 w-4 mr-1" /> Validate
               </Button>
