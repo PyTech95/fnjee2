@@ -18,6 +18,13 @@ const LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H"];
 const draftKey = (aid) => `cbt_draft_${aid}`;
 const visitedKey = (aid) => `cbt_visited_${aid}`;
 
+// Candidate photo fallback: initials drawn locally (no third-party avatar service, works offline).
+const initialsAvatar = (name = "Student") => {
+  const ini = String(name || "Student").trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase() || "S";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80"><rect width="80" height="80" fill="#0b3d6b"/><text x="40" y="50" font-family="Arial,sans-serif" font-size="30" font-weight="700" fill="#fff" text-anchor="middle">${ini.replace(/[<&>]/g, "")}</text></svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+};
+
 // Exam banner follows the paper's content (a Biology drill must not say "JEE Advanced").
 export function examFamily(exam) {
   const title = String(exam?.exam?.title || "");
@@ -317,7 +324,7 @@ export default function CbtExam() {
             <div className="font-display font-bold text-[#0b3d6b] text-sm sm:text-base truncate">FNJEE Computer Based Test</div>
           </div>
           <div className="ml-auto flex items-center gap-2 shrink-0">
-            <img data-testid="cbt-banner-avatar" src={user?.avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${user?.name || "Student"}`}
+            <img data-testid="cbt-banner-avatar" src={user?.avatar || initialsAvatar(user?.name)}
               alt="candidate" className="h-10 w-10 rounded border border-slate-200 bg-slate-100 object-cover" />
             <div className="hidden sm:block text-right leading-tight">
               <div className="text-[9px] uppercase tracking-widest text-slate-400">Candidate</div>
@@ -462,7 +469,7 @@ export default function CbtExam() {
         {/* RIGHT SIDEBAR */}
         <aside className="lg:w-80 shrink-0 bg-white border-l border-slate-200 flex flex-col">
           <div className="p-4 border-b border-slate-200 flex flex-col items-center gap-2 bg-[#f7fafc]">
-            <img data-testid="cbt-candidate-avatar" src={user?.avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${user?.name || "Student"}`}
+            <img data-testid="cbt-candidate-avatar" src={user?.avatar || initialsAvatar(user?.name)}
               alt="candidate" className="h-20 w-20 rounded-md border border-slate-300 bg-white object-cover" />
             <div className="text-center leading-tight">
               <div className="text-[10px] uppercase tracking-widest text-slate-400 flex items-center justify-center gap-1"><User2 className="h-3 w-3" /> Candidate</div>
@@ -651,7 +658,7 @@ function PreExam({ exam, user, lang, setLang, agree, setAgree, starting, onStart
   const fam = examFamily(exam);
   const candidate = (
     <div className="flex flex-col items-center gap-2 w-40 shrink-0">
-      <img src={user?.avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${user?.name || "Student"}`}
+      <img src={user?.avatar || initialsAvatar(user?.name)}
         alt="candidate" className="h-28 w-28 rounded-md border-2 border-slate-200 bg-slate-100 object-cover" />
       <div className="font-display font-bold text-[#0b2e59] text-center leading-tight" data-testid="cbt-pre-name">{user?.name}</div>
       <div className="text-xs text-slate-500 text-center break-all">{user?.email}</div>
