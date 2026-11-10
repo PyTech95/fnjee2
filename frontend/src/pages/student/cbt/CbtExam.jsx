@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Clock, FileText, Info, ListChecks, User2, Loader2, CheckCircle2, AlertCircle, ChevronRight, ChevronLeft, ChevronDown } from "lucide-react";
+import { Clock, FileText, Info, ListChecks, Loader2, CheckCircle2, AlertCircle, ChevronRight, ChevronLeft, ChevronDown } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 const LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H"];
@@ -312,7 +312,7 @@ export default function CbtExam() {
   const fam = examFamily(exam);
 
   return (
-    <div data-testid="cbt-exam-page" className="min-h-screen bg-slate-100 flex flex-col text-slate-900">
+    <div data-testid="cbt-exam-page" className="min-h-screen lg:h-screen lg:overflow-hidden bg-slate-100 flex flex-col text-slate-900">
       {/* ---------- TRICOLOR EXAM BANNER ---------- */}
       <div className="bg-white">
         <div className="flex items-center gap-3 px-3 sm:px-5 py-2">
@@ -324,12 +324,12 @@ export default function CbtExam() {
             <div className="font-display font-bold text-[#0b3d6b] text-sm sm:text-base truncate">FNJEE Computer Based Test</div>
           </div>
           <div className="ml-auto flex items-center gap-2 shrink-0">
-            <img data-testid="cbt-banner-avatar" src={user?.avatar || initialsAvatar(user?.name)}
-              alt="candidate" className="h-10 w-10 rounded border border-slate-200 bg-slate-100 object-cover" />
-            <div className="hidden sm:block text-right leading-tight">
+            <div className="text-right leading-tight min-w-0">
               <div className="text-[9px] uppercase tracking-widest text-slate-400">Candidate</div>
-              <div className="font-semibold text-sm text-[#0b3d6b]">{user?.name || "Student"}</div>
+              <div className="font-semibold text-xs sm:text-sm text-[#0b3d6b] truncate max-w-[28vw] sm:max-w-[16rem]" data-testid="cbt-candidate-name">{user?.name || "Student"}</div>
             </div>
+            <img data-testid="cbt-candidate-avatar" src={user?.avatar || initialsAvatar(user?.name)}
+              alt="candidate" className="h-10 w-10 rounded border border-slate-200 bg-slate-100 object-cover shrink-0" />
           </div>
         </div>
         <div className="h-1.5 w-full bg-gradient-to-r from-[#ff9933] via-white to-[#138808]" />
@@ -353,7 +353,7 @@ export default function CbtExam() {
 
       {/* ---------- TITLE TAG + TIMER ---------- */}
       <div className="bg-[#eaf6fb] border-b border-[#bfe3ef] px-3 sm:px-4 py-2 flex items-center gap-3">
-        <span className="inline-flex items-center gap-2 bg-[#2f90b5] text-white text-sm font-medium rounded px-3 py-1.5 shadow-sm">
+        <span className="hidden sm:inline-flex items-center gap-2 bg-[#2f90b5] text-white text-sm font-medium rounded px-3 py-1.5 shadow-sm">
           <FileText className="h-4 w-4" /> {exam.exam.title}
         </span>
         <div className="ml-auto flex items-center gap-4">
@@ -389,7 +389,7 @@ export default function CbtExam() {
       {/* ---------- BODY ---------- */}
       <div className="flex-1 flex flex-col lg:flex-row min-h-0">
         {/* MAIN LEFT */}
-        <main className="flex-1 min-w-0 flex flex-col">
+        <main className="flex-1 min-w-0 min-h-0 flex flex-col">
           <div className="bg-[#f2f7fa] border-b border-slate-200 px-4 py-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
             <span className="text-slate-700">Question Type: <b className="text-slate-900" data-testid="cbt-qtype">{q.type === "scm" ? "MCQ" : q.type === "msq" ? "MSQ (Multiple Correct)" : "Numerical"}</b></span>
             <span className="ml-auto inline-flex items-center gap-4 text-xs sm:text-sm">
@@ -467,25 +467,12 @@ export default function CbtExam() {
         </main>
 
         {/* RIGHT SIDEBAR */}
-        <aside className="lg:w-80 shrink-0 bg-white border-l border-slate-200 flex flex-col">
-          <div className="p-4 border-b border-slate-200 flex flex-col items-center gap-2 bg-[#f7fafc]">
-            <img data-testid="cbt-candidate-avatar" src={user?.avatar || initialsAvatar(user?.name)}
-              alt="candidate" className="h-20 w-20 rounded-md border border-slate-300 bg-white object-cover" />
-            <div className="text-center leading-tight">
-              <div className="text-[10px] uppercase tracking-widest text-slate-400 flex items-center justify-center gap-1"><User2 className="h-3 w-3" /> Candidate</div>
-              <div className="font-semibold text-sm text-[#0b3d6b]" data-testid="cbt-candidate-name">{user?.name || "Student"}</div>
-            </div>
+        <aside className="lg:w-80 shrink-0 bg-white border-l border-slate-200 flex flex-col lg:min-h-0">
+          <div className="bg-[#2f90b5] text-white px-3 py-2 font-semibold text-sm flex items-center gap-2" data-testid="cbt-palette-section-header">
+            <span className="truncate">{currentSection?.name || currentSubject?.name}</span>
+            <span className="ml-auto text-xs font-medium text-white/85 shrink-0">Choose a Question</span>
           </div>
-
-          <div className="p-3 border-b border-slate-200">
-            <PaletteLegend counts={counts} />
-          </div>
-
-          <div className="bg-[#2f90b5] text-white px-3 py-2 font-semibold text-sm" data-testid="cbt-palette-section-header">
-            {currentSection?.name || currentSubject?.name}
-          </div>
-          <div className="px-3 py-2 text-sm font-medium text-slate-600 border-b border-slate-200">Choose a Question</div>
-          <div className="p-3 flex-1 overflow-y-auto bg-[#eef6fa]">
+          <div className="p-3 lg:flex-1 lg:min-h-0 overflow-y-auto en-scroll bg-[#eef6fa]" data-testid="cbt-palette-scroll">
             <div className="grid grid-cols-5 gap-2.5" data-testid="cbt-palette">
               {(currentSection?.question_ids || subjectQids).map((qid) => (
                 <PaletteCell
@@ -498,6 +485,10 @@ export default function CbtExam() {
                 />
               ))}
             </div>
+          </div>
+
+          <div className="p-3 border-t border-slate-200 shrink-0" data-testid="cbt-legend">
+            <PaletteLegend counts={counts} compact />
           </div>
         </aside>
       </div>

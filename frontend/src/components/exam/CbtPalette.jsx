@@ -64,7 +64,7 @@ function Swatch({ status }) {
   );
 }
 
-export function PaletteLegend({ counts }) {
+export function PaletteLegend({ counts, compact = false }) {
   const items = [
     { key: "answered", label: "Answered" },
     { key: "not-answered", label: "Not Answered" },
@@ -73,9 +73,9 @@ export function PaletteLegend({ counts }) {
     { key: "answered-marked", label: "Answered & Marked for Review (will be considered for evaluation)" },
   ];
   return (
-    <div className="grid grid-cols-1 gap-2 text-xs text-slate-700">
+    <div className={`grid ${compact ? "grid-cols-2 gap-x-2 gap-y-1.5" : "grid-cols-1 gap-2"} text-xs text-slate-700`}>
       {items.map((it) => (
-        <div key={it.key} className="flex items-center gap-2" data-testid={`legend-${it.key}`}>
+        <div key={it.key} className={`flex items-center gap-2 ${compact && it.key === "answered-marked" ? "col-span-2" : ""}`} data-testid={`legend-${it.key}`}>
           <span className="relative grid place-items-center h-6 w-7 shrink-0">
             <Swatch status={it.key} />
             {counts && (
