@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Video, Radio, CalendarClock, CheckCircle2, ExternalLink, Clapperboard, FileText } from "lucide-react";
 import { toast } from "sonner";
+import { isNativeApp } from "@/lib/native";
 
 const fmt = (iso) => { try { return new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }); } catch { return iso; } };
 
@@ -15,12 +16,22 @@ export default function StudentLiveClasses() {
   const load = () => { setLoading(true); liveClassesApi.list().then(setClasses).finally(() => setLoading(false)); };
   useEffect(() => { load(); const iv = setInterval(load, 60000); return () => clearInterval(iv); }, []);
 
+  // Open the tab synchronously (inside the tap) so pop-up blockers / the app WebView don't swallow it,
+  // then point it at the meeting once attendance is marked.
   const join = async (c) => {
+    const inApp = isNativeApp();
+    const win = inApp ? null : window.open("about:blank", "_blank");
+    if (win) { try { win.opener = null; } catch { /* cross-origin later — fine */ } }
     try {
       const r = await liveClassesApi.join(c.id);
+      if (!r?.meeting_url) throw new Error("No meeting link for this class yet");
       toast.success("Attendance marked — opening class");
-      window.open(r.meeting_url, "_blank", "noopener");
-    } catch (e) { toast.error(e?.response?.data?.detail || "Could not join"); }
+      if (win && !win.closed) win.location.href = r.meeting_url;
+      else window.location.href = r.meeting_url;   // app / blocked pop-up: open in place (the app hands it to Meet/Zoom)
+    } catch (e) {
+      if (win && !win.closed) win.close();
+      toast.error(e?.response?.data?.detail || e?.message || "Could not join");
+    }
   };
 
   const live = classes.filter((c) => c.status === "live");

@@ -34,7 +34,7 @@ export default function Practice() {
       });
       if (t.exhausted_pool) toast.info("You've seen most questions — some may repeat.");
       else toast.success(`Fresh paper ready: ${t.new_questions} new questions!`);
-      nav(`/student/exam/${t.id}`);
+      nav(`/student/cbt/${t.id}`);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Could not generate a paper");
     } finally { setBusy(false); }

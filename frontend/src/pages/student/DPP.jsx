@@ -3,19 +3,29 @@ import { Link } from "react-router-dom";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
-import { Flame, Zap, Calendar, ChevronRight } from "lucide-react";
+import { Flame, Zap, Calendar, ChevronRight, Check } from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
+import ChapterPicker from "@/components/bank/ChapterPicker";
 
-const SUBJECTS = ["Physics", "Chemistry", "Biology"];
+const SUBJECTS = ["Physics", "Chemistry", "Biology", "Mathematics"];
+// default subjects follow the student's exam (JEE → Maths, NEET → Biology)
+const defaultSubjects = (exam = "") => {
+  const e = String(exam).toUpperCase();
+  if (e.includes("JEE") && e.includes("NEET")) return SUBJECTS;
+  if (e.includes("JEE")) return ["Physics", "Chemistry", "Mathematics"];
+  return ["Physics", "Chemistry", "Biology"];
+};
 
 export default function DPP() {
   const [today, setToday] = useState(null);
   const [history, setHistory] = useState([]);
-  const [subjects, setSubjects] = useState(SUBJECTS);
+  const { user } = useAuth();
+  const [subjects, setSubjects] = useState(() => defaultSubjects(user?.exam_target));
+  const [pick, setPick] = useState({ chapters: [], topics: [] });
   const [count, setCount] = useState(20);
   const [difficulty, setDifficulty] = useState("");
   const [busy, setBusy] = useState(false);
@@ -30,9 +40,9 @@ export default function DPP() {
     if (subjects.length === 0) { toast.error("Pick at least one subject"); return; }
     setBusy(true);
     try {
-      const r = await api.post("/dpp/generate", { subjects, count, difficulty: difficulty || undefined, regenerate });
+      const r = await api.post("/dpp/generate", { subjects, count, difficulty: difficulty || undefined, regenerate, chapters: pick.chapters, topics: pick.topics });
       setToday({ ...r.data, exists: true });
-      toast.success(`Fresh DPP with ${count} questions ready.`);
+      toast.success(`Fresh DPP with ${r.data?.count || count} questions ready.`);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Could not generate DPP");
     } finally { setBusy(false); }
@@ -54,14 +64,14 @@ export default function DPP() {
             <div className="h-11 w-11 rounded-xl bg-accent/15 text-accent grid place-items-center"><Zap className="h-5 w-5" /></div>
             <div>
               <div className="font-display font-semibold text-lg">Build today's set</div>
-              <div className="text-sm text-muted-foreground">Pick subjects, set difficulty, choose the length.</div>
+              <div className="text-sm text-muted-foreground">Tap subjects to include them, optionally pick chapters, then choose the length.</div>
             </div>
           </div>
 
           <div className="space-y-6">
             <div>
               <Label className="text-sm font-semibold">Subjects</Label>
-              <div className="mt-3 grid grid-cols-3 gap-2">
+              <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2">
                 {SUBJECTS.map((s) => {
                   const on = subjects.includes(s);
                   return (
@@ -69,15 +79,21 @@ export default function DPP() {
                       key={s}
                       data-testid={`dpp-subject-${s.toLowerCase()}`}
                       onClick={() => setSubjects(on ? subjects.filter((x) => x !== s) : [...subjects, s])}
-                      className={`px-2 sm:px-4 py-3 rounded-xl border text-xs sm:text-sm font-medium truncate transition-colors duration-200 ${
-                        on ? "border-primary bg-primary/10 text-primary" : "border-border hover:border-primary/40"
+                      aria-pressed={on}
+                      className={`px-2 sm:px-3 py-3 rounded-xl border text-xs sm:text-sm font-medium flex items-center justify-center gap-1.5 transition-colors duration-200 ${
+                        on ? "border-primary bg-primary text-primary-foreground" : "border-border text-muted-foreground hover:border-primary/40"
                       }`}
                     >
-                      {s}
+                      {on && <Check className="h-3.5 w-3.5 shrink-0" />}<span className="truncate">{s}</span>
                     </button>
                   );
                 })}
               </div>
+            </div>
+
+            <div>
+              <Label className="text-sm font-semibold">Chapters <span className="font-normal text-muted-foreground">(optional — leave empty for all chapters)</span></Label>
+              <div className="mt-3"><ChapterPicker subjects={subjects} value={pick} onChange={setPick} testId="dpp-chapters" /></div>
             </div>
 
             <div>
@@ -107,12 +123,12 @@ export default function DPP() {
               </div>
             </div>
 
-            <div className="flex gap-3 pt-2">
+            <div className="flex flex-wrap gap-3 pt-2">
               <Button data-testid="dpp-generate-btn" onClick={() => generate(!!today?.exists)} disabled={busy} className="rounded-full">
                 {busy ? "Building…" : today?.exists ? "Regenerate today's set" : "Generate today's DPP"}
               </Button>
               {today?.exists && (
-                <Link to={`/student/exam/${today.test_id}`}>
+                <Link to={`/student/cbt/${today.test_id}`}>
                   <Button data-testid="dpp-start-btn" variant="outline" className="rounded-full">Start now <ChevronRight className="h-4 w-4 ml-1" /></Button>
                 </Link>
               )}
@@ -159,7 +175,7 @@ export default function DPP() {
                 · {today.count} questions
               </div>
             </div>
-            <Link to={`/student/exam/${today.test_id}`}>
+            <Link to={`/student/cbt/${today.test_id}`}>
               <Button data-testid="dpp-open-exam" className="rounded-full">Open CBT</Button>
             </Link>
           </div>
@@ -170,7 +186,7 @@ export default function DPP() {
         <div className="font-display font-semibold text-lg mb-3">DPP history</div>
         <div className="space-y-2 text-sm">
           {history.map((h) => (
-            <Link key={h.id} to={`/student/exam/${h.test_id}`}
+            <Link key={h.id} to={`/student/cbt/${h.test_id}`}
               className="flex justify-between items-center p-3 rounded-lg border border-border hover:border-primary/40 transition-colors duration-200"
               data-testid={`dpp-history-${h.date}`}>
               <div>

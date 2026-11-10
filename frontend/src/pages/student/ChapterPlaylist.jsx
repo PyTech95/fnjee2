@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "@/lib/api";
+import { api, practiceApi } from "@/lib/api";
+import { classLabel } from "@/lib/bank";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
-import { Zap, Layers, Network, Play, Clock, ArrowRight, CheckCircle2, RotateCcw } from "lucide-react";
+import { Zap, Layers, Network, Play, Clock, ArrowRight, CheckCircle2, RotateCcw, Search } from "lucide-react";
 
 export default function ChapterPlaylist() {
   const [chapters, setChapters] = useState([]);
@@ -16,9 +17,18 @@ export default function ChapterPlaylist() {
   const [cardIdx, setCardIdx] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [subject, setSubject] = useState("");
+  const [query, setQuery] = useState("");
   const nav = useNavigate();
 
-  useEffect(() => { api.get("/playlist/chapters").then((r) => setChapters(r.data)); }, []);
+  useEffect(() => {
+    api.get("/playlist/chapters").then((r) => {
+      setChapters(r.data);
+      const subs = [...new Set(r.data.map((c) => c.subject))];
+      if (subs.length) setSubject((s) => s || subs[0]);
+    }).finally(() => setLoaded(true));
+  }, []);
 
   const start = async (item) => {
     setSelected(item); setStepIdx(0); setCardIdx(0); setFlipped(false);
@@ -32,8 +42,11 @@ export default function ChapterPlaylist() {
     if (!playlist?.steps?.[0]?.questions?.length) { toast.error("No DPP questions available"); return; }
     setStarting(true);
     try {
-      const r = await api.post("/dpp/generate", { subjects: [playlist.subject], count: 10, regenerate: true });
-      nav(`/student/exam/${r.data.test_id}`);
+      // a chapter-only practice set (does not replace today's DPP)
+      // the exact chapter names of this playlist's questions (the bank may say "Laws of Motion (Class 11)")
+      const chs = [...new Set(playlist.steps[0].questions.map((q) => q.chapter).filter(Boolean))];
+      const t = await practiceApi.generate({ subjects: [playlist.subject], chapters: chs.length ? chs : [playlist.chapter], count: 10, allow_repeat: true });
+      nav(`/student/cbt/${t.id}`);
     } catch (e) { toast.error(e?.response?.data?.detail || "Could not start DPP"); setStarting(false); }
   };
 
@@ -45,24 +58,8 @@ export default function ChapterPlaylist() {
           <h1 className="font-display font-bold text-3xl sm:text-4xl tracking-tight mt-1">One tap · 25 minutes · one chapter done.</h1>
           <p className="text-muted-foreground mt-2 max-w-2xl">A tight bundle of quick MCQs → flashcards → mindmap. Perfect for a study break or right before a mock.</p>
         </div>
-        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {chapters.map((c) => (
-            <Card key={`${c.subject}|${c.chapter}`} data-testid={`playlist-pick-${c.chapter.toLowerCase().replace(/\s+/g, "-")}`}
-              className="en-card p-6 cursor-pointer hover:border-primary/40 transition-colors duration-200"
-              onClick={() => start(c)}>
-              <Badge variant="secondary" className="rounded-full">{c.subject}</Badge>
-              <h3 className="font-display font-bold text-xl mt-3">{c.chapter}</h3>
-              <div className="mt-4 text-xs text-muted-foreground flex items-center gap-3">
-                <span className="flex items-center gap-1"><Clock className="h-3 w-3" /> ~25 min</span>
-                <span className="flex items-center gap-1"><Zap className="h-3 w-3" /> DPP</span>
-                <span className="flex items-center gap-1"><Layers className="h-3 w-3" /> Cards</span>
-                <span className="flex items-center gap-1"><Network className="h-3 w-3" /> Map</span>
-              </div>
-              <Button size="sm" className="rounded-full mt-4"><Play className="h-3.5 w-3.5 mr-1" /> Start playlist</Button>
-            </Card>
-          ))}
-          {chapters.length === 0 && <div className="text-sm text-muted-foreground col-span-full">Loading chapters…</div>}
-        </div>
+        <PlaylistPicker chapters={chapters} loaded={loaded} subject={subject} setSubject={setSubject}
+          query={query} setQuery={setQuery} onPick={start} />
       </div>
     );
   }
@@ -193,5 +190,54 @@ export default function ChapterPlaylist() {
         </Card>
       )}
     </div>
+  );
+}
+
+// Any chapter of the question bank can be a playlist: subject tabs, search, a scrolling list.
+function PlaylistPicker({ chapters, loaded, subject, setSubject, query, setQuery, onPick }) {
+  const subjects = [...new Set(chapters.map((c) => c.subject))];
+  const needle = query.trim().toLowerCase();
+  const list = chapters.filter((c) => c.subject === subject && (!needle || c.chapter.toLowerCase().includes(needle)));
+  const byClass = list.reduce((acc, c) => { const k = c.student_class ? classLabel(c.student_class) : "Other chapters"; (acc[k] = acc[k] || []).push(c); return acc; }, {});
+  if (!loaded) return <div className="text-sm text-muted-foreground">Loading chapters…</div>;
+  if (!chapters.length) return <div className="text-sm text-muted-foreground">No chapters yet — questions need a subject and chapter in the Question Bank.</div>;
+  return (
+    <Card className="en-card p-4 sm:p-6 space-y-4">
+      <div className="flex flex-wrap gap-2">
+        {subjects.map((s) => (
+          <button key={s} type="button" data-testid={`playlist-subject-${s.toLowerCase()}`} onClick={() => setSubject(s)}
+            className={`px-4 py-1.5 rounded-full text-sm border transition-colors ${subject === s ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-muted"}`}>{s}</button>
+        ))}
+      </div>
+      <div className="relative">
+        <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+        <input data-testid="playlist-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${subject} chapters…`}
+          className="w-full h-10 rounded-full border bg-background pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-primary/30" />
+      </div>
+      <div className="max-h-[60vh] overflow-y-auto en-scroll rounded-xl border divide-y">
+        {Object.entries(byClass).map(([cls, items]) => (
+          <div key={cls}>
+            <div className="sticky top-0 z-10 bg-muted/90 backdrop-blur px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider">{cls}</div>
+            {items.map((c) => (
+              <button key={`${c.subject}|${c.chapter}`} type="button" onClick={() => onPick(c)}
+                data-testid={`playlist-pick-${c.chapter.toLowerCase().replace(/\s+/g, "-")}`}
+                className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-muted transition-colors">
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium break-anywhere">{c.chapter}</div>
+                  <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-3 mt-0.5">
+                    <span className="flex items-center gap-1"><Clock className="h-3 w-3" /> ~25 min</span>
+                    {c.questions !== false && <span className="flex items-center gap-1"><Zap className="h-3 w-3" /> MCQs</span>}
+                    <span className="flex items-center gap-1"><Layers className="h-3 w-3" /> Cards</span>
+                    {c.has_map && <span className="flex items-center gap-1"><Network className="h-3 w-3" /> Map</span>}
+                  </div>
+                </div>
+                <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-primary text-primary-foreground text-xs font-semibold px-3 py-1.5"><Play className="h-3 w-3" /> Start</span>
+              </button>
+            ))}
+          </div>
+        ))}
+        {!list.length && <div className="px-4 py-6 text-sm text-muted-foreground">No chapter matches “{query}”.</div>}
+      </div>
+    </Card>
   );
 }

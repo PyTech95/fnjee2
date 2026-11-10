@@ -106,7 +106,7 @@ export default function StudentDashboard() {
                 <div className="font-semibold">{t.title}</div>
                 <div className="text-xs text-muted-foreground mt-1">{t.duration_minutes} min · {t.question_ids?.length} qs · {t.exam_type}</div>
               </div>
-              <Link to={`/student/exam/${t.id}`}><Button size="sm" className="rounded-full">Start</Button></Link>
+              <Link to={`/student/cbt/${t.id}`}><Button size="sm" className="rounded-full">Start</Button></Link>
             </div>
           ))}
           {tests.length === 0 && <div className="text-sm text-muted-foreground">No tests assigned.</div>}

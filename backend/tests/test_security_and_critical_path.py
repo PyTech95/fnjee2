@@ -55,12 +55,13 @@ class TestAuth:
     def test_parent_login(self, parent_token):
         assert isinstance(parent_token, str) and len(parent_token) > 20
 
-    def test_wrong_role_rejected(self):
-        # valid student email but requesting admin role must fail with 401
+    def test_wrong_role_tab_never_escalates(self):
+        # the role tab is only a hint: student credentials on the Admin tab sign in as the *student*, never admin
         r = requests.post(f"{API}/auth/login",
                           json={"email": STUDENT["email"], "password": STUDENT["password"], "role": "admin"},
                           timeout=30)
-        assert r.status_code == 401, f"Expected 401 for wrong role, got {r.status_code}: {r.text[:200]}"
+        assert r.status_code == 200, r.text[:200]
+        assert r.json()["user"]["role"] == "student"
 
     def test_wrong_password_rejected(self):
         r = requests.post(f"{API}/auth/login",

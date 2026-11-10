@@ -10,18 +10,36 @@ export function printScorecard({ test, attempt, qmap = {}, student = "Student", 
   const unatt = attempt.unattempted ?? 0;
   const when = attempt.submitted_at ? new Date(attempt.submitted_at).toLocaleString() : "";
 
+  const LETTERS = ["A", "B", "C", "D", "E", "F"];
+  const optText = (o) => (o && typeof o === "object" ? (o.text ?? o.label ?? "") : o);
+  // "A" / "a" / "1" -> "A · <option text>" so the student sees which choice it was (meeting 9 Nov).
+  const fmt = (vals, q) => {
+    const list = (vals || []).map((v) => String(v).trim()).filter(Boolean);
+    if (!list.length) return "—";
+    return list.map((v) => {
+      const up = v.toUpperCase();
+      const idx = LETTERS.indexOf(up);
+      const opts = q.options || [];
+      if (idx >= 0 && opts[idx] != null) {
+        const t = String(optText(opts[idx]) || "").replace(/\s+/g, " ").trim();
+        return `<b>${up}</b>${t ? ` <span class="opt">${esc(t.length > 38 ? t.slice(0, 37) + "…" : t)}</span>` : ""}`;
+      }
+      return `<b>${esc(idx >= 0 ? up : v)}</b>`;
+    }).join("<br>");
+  };
+
   const rows = (attempt.detailed || []).map((d, i) => {
     const q = qmap[d.question_id] || {};
     const res = d.result || "";
     const color = res === "correct" ? "#16a34a" : res === "wrong" ? "#dc2626" : "#64748b";
-    const ua = esc((d.user_answer || []).join(", ") || "—");
-    const ca = esc((d.correct || []).join(", ") || "—");
+    const ua = res === "unattempted" ? "Not answered" : fmt(d.user_answer, q);
+    const ca = fmt(d.correct, q);
     const marks = d.marks_awarded ?? 0;
     return `<tr>
       <td class="c">${i + 1}</td>
       <td>${esc(String(q.text || "").slice(0, 180))}</td>
-      <td class="c">${ua}</td>
-      <td class="c">${ca}</td>
+      <td class="a">${ua}</td>
+      <td class="a">${ca}</td>
       <td class="c" style="text-transform:capitalize;color:${color};font-weight:600">${esc(res)}</td>
       <td class="c" style="font-weight:700;color:${color}">${marks > 0 ? "+" : ""}${marks}</td>
     </tr>`;
@@ -49,6 +67,8 @@ export function printScorecard({ test, attempt, qmap = {}, student = "Student", 
     th{background:#f1f5f9;text-align:left;padding:8px;color:#475569;font-size:12px}
     td{padding:8px;border-bottom:1px solid #eee;vertical-align:top}
     td.c{text-align:center;white-space:nowrap}
+    td.a{min-width:110px}
+    .opt{color:#64748b;font-size:12px}
     tr{page-break-inside:avoid}
     .foot{margin-top:22px;border-top:1px solid #e2e8f0;padding-top:10px;font-size:11px;color:#94a3b8;text-align:center}
     @media print{button{display:none}}
@@ -72,7 +92,22 @@ export function printScorecard({ test, attempt, qmap = {}, student = "Student", 
   <div style="text-align:center;margin-top:16px"><button onclick="window.print()">Print / Save as PDF</button></div>
   </body></html>`;
 
-  const w = window.open("", "_blank");
-  if (!w) return;
-  w.document.open(); w.document.write(html); w.document.close();
+  const inApp = /FNJEE-App/i.test(navigator.userAgent || "");
+  const w = inApp ? null : window.open("", "_blank");
+  if (w) { w.document.open(); w.document.write(html); w.document.close(); return; }
+  // Android/iOS app (or pop-ups blocked): show it full-screen inside the page.
+  const wrap = document.createElement("div");
+  wrap.setAttribute("data-testid", "scorecard-overlay");
+  wrap.style.cssText = "position:fixed;inset:0;z-index:2147483000;background:#fff;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top)";
+  const bar = document.createElement("div");
+  bar.style.cssText = "display:flex;gap:8px;justify-content:flex-end;padding:10px 12px;border-bottom:1px solid #e2e8f0";
+  const mk = (label, fn) => { const b = document.createElement("button"); b.textContent = label;
+    b.style.cssText = "border:1px solid #cbd5e1;border-radius:999px;padding:8px 16px;font:600 14px sans-serif;background:#fff"; b.onclick = fn; return b; };
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "flex:1;border:0;width:100%";
+  bar.appendChild(mk("Print / Save PDF", () => { try { frame.contentWindow.print(); } catch { /* not supported */ } }));
+  bar.appendChild(mk("Close", () => wrap.remove()));
+  wrap.appendChild(bar); wrap.appendChild(frame);
+  document.body.appendChild(wrap);
+  frame.srcdoc = html;
 }

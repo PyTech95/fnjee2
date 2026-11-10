@@ -29,7 +29,7 @@ export default function CourseDetail() {
   useSEO({
     title: course ? `${course.title} · ${course.target} · FNJEE.com` : "Course",
     description: course?.highlights?.join(" · "),
-    canonical: `https://exam-builder-hub.emergent.host/courses/${slug}`,
+    canonical: `https://fnjee.com/courses/${slug}`,
   });
 
   const handleEnroll = async () => {

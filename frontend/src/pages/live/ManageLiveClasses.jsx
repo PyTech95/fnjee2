@@ -26,6 +26,13 @@ const STATUS_STYLE = {
   ended: "bg-muted text-muted-foreground border-border",
 };
 const fmt = (iso) => { try { return new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }); } catch { return iso; } };
+// datetime-local needs *local* time; toISOString() is UTC and shifted classes by 5h30 on every edit.
+const toLocalInput = (iso) => {
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+};
 const emptyForm = { title: "", subject: "", description: "", provider: "jitsi", meeting_url: "", starts_at: "", duration_minutes: 60, recording_url: "", material_name: "", material_url: "" };
 
 export default function ManageLiveClasses({ accent = "Teacher" }) {
@@ -45,7 +52,7 @@ export default function ManageLiveClasses({ accent = "Teacher" }) {
     setEditId(c.id);
     setForm({ ...emptyForm, title: c.title, subject: c.subject || "", description: c.description || "",
       provider: c.provider, meeting_url: c.meeting_url || "",
-      starts_at: c.starts_at ? new Date(c.starts_at).toISOString().slice(0, 16) : "",
+      starts_at: c.starts_at ? toLocalInput(c.starts_at) : "",
       duration_minutes: c.duration_minutes, recording_url: c.recording_url || "" });
     setOpen(true);
   };

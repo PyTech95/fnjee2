@@ -169,6 +169,8 @@ export const usersApi = {
   get: (id) => api.get(`/users/${id}`).then((r) => r.data),
   purgeAll: () => api.post("/admin/users/purge", { confirm: "DELETE ALL USERS" }).then((r) => r.data),
   create: (data) => api.post("/admin/users", data).then((r) => r.data),
+  // students a teacher/admin can assign tests to
+  directory: () => api.get("/students/directory").then((r) => r.data),
 };
 
 export const rewardsApi = {

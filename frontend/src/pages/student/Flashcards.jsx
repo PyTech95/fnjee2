@@ -10,6 +10,7 @@ import { RotateCcw, ArrowLeft, ArrowRight, BookMarked, Shuffle } from "lucide-re
 export default function Flashcards() {
   const [chapters, setChapters] = useState([]);
   const [chapter, setChapter] = useState("");
+  const [subject, setSubject] = useState("");
   const [cards, setCards] = useState([]);
   const [idx, setIdx] = useState(0);
   const [flipped, setFlipped] = useState(false);
@@ -17,7 +18,10 @@ export default function Flashcards() {
   useEffect(() => {
     api.get("/flashcards/chapters").then((r) => {
       setChapters(r.data);
-      if (r.data.length && !chapter) setChapter(`${r.data[0].subject}|${r.data[0].chapter}`);
+      if (r.data.length && !chapter) {
+        setSubject(r.data[0].subject);
+        setChapter(`${r.data[0].subject}|${r.data[0].chapter}`);
+      }
     });
   }, []);
 
@@ -48,14 +52,21 @@ export default function Flashcards() {
       <div className="grid lg:grid-cols-[280px,1fr] gap-6">
         <Card className="en-card p-5 h-fit">
           <div className="text-xs font-bold uppercase tracking-[0.2em] text-muted-foreground mb-3">Chapters</div>
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            {[...new Set(chapters.map((c) => c.subject))].map((sb) => (
+              <button key={sb} type="button" data-testid={`flashcards-subject-${sb.toLowerCase()}`}
+                onClick={() => { setSubject(sb); const first = chapters.find((c) => c.subject === sb); if (first) setChapter(`${first.subject}|${first.chapter}`); }}
+                className={`px-3 py-1 rounded-full text-xs border transition-colors ${subject === sb ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-muted"}`}>{sb}</button>
+            ))}
+          </div>
           <Select value={chapter} onValueChange={setChapter}>
             <SelectTrigger data-testid="flashcards-chapter-select" className="rounded-full">
               <SelectValue placeholder="Pick a chapter" />
             </SelectTrigger>
             <SelectContent>
-              {chapters.map((c) => (
+              {chapters.filter((c) => !subject || c.subject === subject).map((c) => (
                 <SelectItem key={`${c.subject}|${c.chapter}`} value={`${c.subject}|${c.chapter}`}>
-                  {c.subject} · {c.chapter} <span className="text-muted-foreground">({c.cards})</span>
+                  {c.chapter}
                 </SelectItem>
               ))}
             </SelectContent>

@@ -40,7 +40,7 @@ export default function NotesQuiz() {
       if (title.trim()) fd.append("title", title.trim());
       const res = await notesQuizApi.fromDocument(fd);
       toast.success(`Quiz ready: ${res.count} questions!`);
-      nav(`/student/exam/${res.test_id}`);
+      nav(`/student/cbt/${res.test_id}`);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Could not build a quiz from this material.");
     } finally { setBusy(false); }
@@ -111,7 +111,7 @@ export default function NotesQuiz() {
                   <div className="font-medium text-sm truncate">{q.title}</div>
                   <div className="text-xs text-muted-foreground">{q.count} questions · {(q.subjects || []).join(", ")}</div>
                 </div>
-                <Button size="sm" variant="outline" className="rounded-full shrink-0" onClick={() => nav(`/student/exam/${q.id}`)}>
+                <Button size="sm" variant="outline" className="rounded-full shrink-0" onClick={() => nav(`/student/cbt/${q.id}`)}>
                   <PlayCircle className="h-4 w-4 mr-1.5" /> Attempt
                 </Button>
               </div>

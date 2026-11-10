@@ -25,7 +25,7 @@ export default function Coach() {
     try {
       const res = await coachApi.drill({ subject: c.subject, chapter: c.chapter, count: 10 });
       toast.success(`Drill ready: ${res.count} questions`);
-      nav(`/student/exam/${res.test_id}`);
+      nav(`/student/cbt/${res.test_id}`);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "No questions for this chapter yet.");
     } finally { setDrilling(null); }

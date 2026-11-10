@@ -7,7 +7,7 @@ import { useSEO } from "@/lib/useSEO";
 import { TESTIMONIALS } from "@/lib/marketingData";
 import { CheckCircle2, Clock, BarChart3, Brain, BookOpen, Zap, Shield, Award, Sparkles } from "lucide-react";
 
-const ORIGIN = "https://exam-builder-hub.emergent.host";
+const ORIGIN = "https://fnjee.com";
 
 /* ---------------- FEATURES ---------------- */
 export function Features() {
@@ -96,8 +96,8 @@ export function Pricing() {
   const plans = [
     { name: "Free", price: "₹0", period: "forever", cta: "Start free", features: ["Unlimited CBT mocks", "Basic analytics", "5,000+ practice questions", "Rank estimate on full mocks"], featured: false },
     { name: "Starter", price: "₹399", period: "/ course", cta: "Start at ₹399", features: ["Masterclass in Biology", "NCERT-line coverage", "3-day full refund", "Web + mobile app"], featured: false },
-    { name: "Serious", price: "₹799", period: "/ course", cta: "Get serious", features: ["Target Batch Ascend NEET 2027", "AI weak-topic drills", "Chapter-wise + PYQs", "Full analytics + heatmap", "Reattempts unlocked"], featured: true },
-    { name: "Combo", price: "₹1,499", period: "/ 2 years", cta: "Combo it", features: ["Target AIIMS Batch NEET 2028", "All features unlocked", "1-on-1 monthly mentor call", "Priority support"], featured: false },
+    { name: "Serious", price: "₹799", period: "/ course", cta: "Get serious", features: ["Target Batch — NEET or JEE 2027", "AI weak-topic drills", "Chapter-wise + PYQs", "Full analytics + heatmap", "Reattempts unlocked"], featured: true },
+    { name: "Combo", price: "₹1,499", period: "/ 2 years", cta: "Combo it", features: ["2-year batch — NEET or JEE 2028", "All features unlocked", "1-on-1 monthly mentor call", "Priority support"], featured: false },
   ];
   return (
     <div data-testid="pricing-page" className="max-w-6xl mx-auto px-6 py-16 lg:py-20">

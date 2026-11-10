@@ -10,11 +10,11 @@ import { Star, Users, CheckCircle2, ShieldCheck, Sparkles, TrendingUp } from "lu
 
 export default function CoursesListing() {
   useSEO({
-    title: "NEET Courses — Target, Masterclass, Test Series · FNJEE.com",
-    description: "1-year and 2-year NEET preparation courses with question banks, recorded lectures, DPPs, mock tests and analytics. NEET 2027 & NEET 2028 batches.",
-    canonical: "https://exam-builder-hub.emergent.host/courses",
+    title: "NEET & JEE Courses — Target Batches & Test Series · FNJEE.com",
+    description: "1-year and 2-year NEET and JEE preparation courses with question banks, DPPs, CBT mock tests and analytics. NEET 2027/2028 and JEE 2027/2028 batches.",
+    canonical: "https://fnjee.com/courses",
   });
-  const [target, setTarget] = useState("all");
+  const [target, setTarget] = useState(() => new URLSearchParams(window.location.search).get("t") || "all");
   const [courses, setCourses] = useState([]);
 
   useEffect(() => {
@@ -28,7 +28,7 @@ export default function CoursesListing() {
       <div className="max-w-2xl">
         <div className="text-xs font-bold uppercase tracking-[0.2em] text-primary">Courses</div>
         <h1 className="font-display font-bold text-4xl sm:text-5xl tracking-tight mt-2">
-          Practice courses built for <span className="text-primary">serious NEET aspirants.</span>
+          Practice courses built for <span className="text-primary">serious NEET &amp; JEE aspirants.</span>
         </h1>
         <p className="text-muted-foreground mt-4 max-w-xl">
           Choose a course that gives you the exact practice, tests and analytics your target rank needs. All courses run on the same CBT engine your exam does.
@@ -37,10 +37,12 @@ export default function CoursesListing() {
 
       <div className="mt-8 flex items-center gap-4 flex-wrap">
         <Tabs value={target} onValueChange={setTarget}>
-          <TabsList data-testid="courses-tabs" className="rounded-full h-auto p-1">
+          <TabsList data-testid="courses-tabs" className="rounded-[22px] h-auto p-1 flex-wrap justify-start">
             <TabsTrigger value="all" className="rounded-full px-4">All batches</TabsTrigger>
             <TabsTrigger value="NEET 2027" className="rounded-full px-4">NEET 2027</TabsTrigger>
             <TabsTrigger value="NEET 2028" className="rounded-full px-4">NEET 2028</TabsTrigger>
+            <TabsTrigger value="JEE 2027" className="rounded-full px-4">JEE 2027</TabsTrigger>
+            <TabsTrigger value="JEE 2028" className="rounded-full px-4">JEE 2028</TabsTrigger>
           </TabsList>
         </Tabs>
         <div className="text-xs text-muted-foreground flex items-center gap-2 ml-auto">

@@ -112,7 +112,7 @@ def _data_url(png: bytes) -> str:
 async def screenshots_to_questions(question_imgs: List[bytes], answer_imgs: List[bytes], *,
                                    subject: str = "", chapter: str = "", student_class: str = "",
                                    exam: str = "", attach_screenshot: bool = False,
-                                   progress_cb=None) -> dict:
+                                   q_type: str = "", progress_cb=None) -> dict:
     async def _p(pct, msg):
         if progress_cb:
             try:
@@ -125,8 +125,11 @@ async def screenshots_to_questions(question_imgs: List[bytes], answer_imgs: List
     await _p(10, "Preparing screenshots…")
     pdf, info = build_pdf(question_imgs, answer_imgs)
     q_pages = [k + 1 for k, p in enumerate(info) if p["kind"] == "QUESTION"]
+    types = ("mcq_single", "mcq_multi", "integer", "true_false", "assertion_reason", "match", "subjective")
+    q_type = q_type if q_type in types else ""
     hint = (f"Subject hint: {subject or 'auto'}. Chapter hint: {chapter or 'auto'}. "
-            f"{len(question_imgs)} QUESTION page(s) and {len(answer_imgs)} ANSWER page(s). "
+            + (f"Question type: {q_type} (use this type for every question). " if q_type else "")
+            + f"{len(question_imgs)} QUESTION page(s) and {len(answer_imgs)} ANSWER page(s). "
             + ("Read the correct answers and solutions from the ANSWER pages."
                if answer_imgs else "No answer screenshots were given: solve each question yourself, "
                                    "set answer_source='ai' and write a clear solution."))
@@ -153,8 +156,7 @@ async def screenshots_to_questions(question_imgs: List[bytes], answer_imgs: List
     for item in result.get("questions", []) or []:
         if not isinstance(item, dict) or not str(item.get("text", "")).strip():
             continue
-        qtype = item.get("type") if item.get("type") in (
-            "mcq_single", "mcq_multi", "integer", "true_false", "assertion_reason", "match", "subjective") else "mcq_single"
+        qtype = q_type or (item.get("type") if item.get("type") in types else "mcq_single")
         options = [str(o) for o in (item.get("options") or [])]
         correct = [str(c).strip().upper() if len(str(c).strip()) == 1 else str(c).strip()
                    for c in (item.get("correct") or []) if str(c).strip()]

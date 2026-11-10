@@ -6,7 +6,7 @@ import { useSEO } from "@/lib/useSEO";
 import { BLOG_POSTS } from "@/lib/marketingData";
 import { CalendarDays, Clock } from "lucide-react";
 
-const ORIGIN = "https://exam-builder-hub.emergent.host";
+const ORIGIN = "https://fnjee.com";
 
 export function BlogIndex() {
   useSEO({

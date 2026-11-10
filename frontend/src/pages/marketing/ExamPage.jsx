@@ -7,7 +7,7 @@ import { useSEO } from "@/lib/useSEO";
 import { EXAM_PAGES } from "@/lib/marketingData";
 import { CheckCircle2, ChevronRight, Sparkles, Target, TrendingUp } from "lucide-react";
 
-const ORIGIN = "https://exam-builder-hub.emergent.host";
+const ORIGIN = "https://fnjee.com";
 
 export default function ExamPage() {
   // Static routes (/jee, /neet, …) don't yield a param via useParams; derive from pathname.
