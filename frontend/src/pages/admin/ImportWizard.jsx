@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { importApi } from "@/lib/api";
 import { Progress } from "@/components/ui/progress";
-import { Download, XCircle, Camera } from "lucide-react";
+import { Download, XCircle, Camera, Crop } from "lucide-react";
+import { useImageCrop, fileToDataUrl } from "@/components/admin/ImageCropDialog";
 import ScreenshotImport from "@/components/admin/ScreenshotImport";
 import AiExcelPrompt from "@/components/admin/AiExcelPrompt";
 import { Card } from "@/components/ui/card";
@@ -34,6 +35,7 @@ const COMMIT_BATCH = 300;
 
 export default function ImportWizard() {
   const [step, setStep] = useState(1);
+  const [cropImage, cropDialog] = useImageCrop();
   const [files, setFiles] = useState([]);
   const file = files[0] || null;
   // Bulk options: save standard-format spreadsheets straight to the bank, skip repeats.
@@ -264,23 +266,24 @@ export default function ImportWizard() {
   const removeRow = (i) => setRows((prev) => prev.filter((_, idx) => idx !== i));
 
   const setAllIncluded = (val) => setRows((prev) => prev.map((r) => ({ ...r, _include: val })));
-  const fileToDataUrl = (f) => new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(f);
-  });
   const attachRowImage = async (i, f) => {
     if (!f) return;
-    if (f.size > 4 * 1024 * 1024) return toast.error("Image too large (max 4MB)");
-    try { updateRow(i, { image_url: await fileToDataUrl(f) }); toast.success("Image attached"); }
+    const out = await cropImage(f);            // crop right after choosing the picture
+    if (!out) return;
+    if (out.size > 4 * 1024 * 1024) return toast.error("Image too large (max 4MB) — crop it smaller");
+    try { updateRow(i, { image_url: await fileToDataUrl(out) }); toast.success("Image attached"); }
     catch { toast.error("Could not read image"); }
+  };
+  const recropRowImage = async (i) => {
+    const out = await cropImage(rows[i].image_url);
+    if (out) updateRow(i, { image_url: await fileToDataUrl(out) });
   };
 
   const includedCount = rows.filter((r) => r._include).length;
 
   return (
     <div data-testid="import-wizard-page" className="space-y-6 max-w-6xl mx-auto">
+      {cropDialog}
       <div>
         <div className="text-xs font-bold uppercase tracking-[0.2em] text-primary">Import wizard</div>
         <h1 className="font-display font-bold text-3xl sm:text-4xl tracking-tight mt-1">Bring your question paper in.</h1>
@@ -607,8 +610,9 @@ export default function ImportWizard() {
                       <label htmlFor={`row-image-${i}`} className="inline-flex items-center gap-1.5 text-xs font-medium cursor-pointer px-3 py-1.5 rounded-full border border-border hover:border-primary transition-colors" data-testid={`row-image-label-${i}`}>
                         <ImageIcon className="h-3.5 w-3.5" /> {r.image_url ? "Replace image" : "Add image"}
                         <input id={`row-image-${i}`} data-testid={`row-image-${i}`} type="file" accept="image/*" className="hidden"
-                          onChange={(e) => attachRowImage(i, e.target.files?.[0])} />
+                          onChange={(e) => { attachRowImage(i, e.target.files?.[0]); e.target.value = ""; }} />
                       </label>
+                      {r.image_url && <Button data-testid={`crop-image-${i}`} type="button" size="sm" variant="outline" onClick={() => recropRowImage(i)}><Crop className="h-3.5 w-3.5 mr-1" /> Crop</Button>}
                       {r.image_url && <Button data-testid={`remove-image-${i}`} type="button" size="sm" variant="outline" onClick={() => updateRow(i, { image_url: null })}>Remove image</Button>}
                     </div>
                     {r.options?.length > 0 && (

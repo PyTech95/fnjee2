@@ -7,7 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Image as ImageIcon } from "lucide-react";
+import { Image as ImageIcon, Crop } from "lucide-react";
+import { useImageCrop, fileToDataUrl } from "@/components/admin/ImageCropDialog";
 import { useNavigate } from "react-router-dom";
 
 const OPTION_LETTERS = ["A", "B", "C", "D"];
@@ -21,16 +22,21 @@ export default function ManualQuestion() {
   });
   const [busy, setBusy] = useState(false);
   const nav = useNavigate();
+  const [cropImage, cropDialog] = useImageCrop();
 
   const upd = (k, v) => setQ((x) => ({ ...x, [k]: v }));
   const updOpt = (i, v) => setQ((x) => ({ ...x, options: x.options.map((o, idx) => (idx === i ? v : o)) }));
-  const onImage = (f) => {
+  // upload → crop → attach (the crop box opens right after choosing the picture)
+  const onImage = async (f) => {
     if (!f) return;
-    if (f.size > 4 * 1024 * 1024) return toast.error("Image too large (max 4MB)");
-    const reader = new FileReader();
-    reader.onload = () => upd("image_url", reader.result);
-    reader.onerror = () => toast.error("Could not read image");
-    reader.readAsDataURL(f);
+    const out = await cropImage(f);
+    if (!out) return;
+    if (out.size > 4 * 1024 * 1024) return toast.error("Image too large (max 4MB) — crop it smaller");
+    try { upd("image_url", await fileToDataUrl(out)); } catch { toast.error("Could not read image"); }
+  };
+  const recrop = async () => {
+    const out = await cropImage(q.image_url);
+    if (out) upd("image_url", await fileToDataUrl(out));
   };
   const toggleCorrect = (letter) => {
     if (q.type === "mcq_single" || q.type === "true_false") upd("correct", [letter]);
@@ -55,6 +61,7 @@ export default function ManualQuestion() {
         <div className="text-xs font-bold uppercase tracking-[0.2em] text-primary">Add</div>
         <h1 className="font-display font-bold text-3xl tracking-tight mt-1">New question</h1>
       </div>
+      {cropDialog}
       <Card className="en-card p-6">
         <form onSubmit={submit} className="space-y-5">
           <div className="grid md:grid-cols-4 gap-4">
@@ -129,8 +136,13 @@ export default function ManualQuestion() {
               <label htmlFor="q-image-input" className="inline-flex items-center gap-2 text-sm font-medium cursor-pointer px-4 py-2 rounded-full border border-border hover:border-primary transition-colors" data-testid="q-image-label">
                 <ImageIcon className="h-4 w-4" /> {q.image_url ? "Replace image" : "Upload image"}
                 <input id="q-image-input" data-testid="q-image-input" type="file" accept="image/*" className="hidden"
-                  onChange={(e) => onImage(e.target.files?.[0])} />
+                  onChange={(e) => { onImage(e.target.files?.[0]); e.target.value = ""; }} />
               </label>
+              {q.image_url && (
+                <Button type="button" variant="outline" size="sm" className="rounded-full" data-testid="q-image-crop" onClick={recrop}>
+                  <Crop className="h-4 w-4 mr-1" /> Crop
+                </Button>
+              )}
               {q.image_url && (
                 <Button type="button" variant="outline" size="sm" className="rounded-full" data-testid="q-image-remove" onClick={() => upd("image_url", null)}>Remove</Button>
               )}

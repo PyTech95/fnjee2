@@ -7,7 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { Plus, Trash2, ImageOff } from "lucide-react";
+import { Plus, Trash2, ImageOff, Crop, Image as ImageIcon } from "lucide-react";
+import { useImageCrop, fileToDataUrl } from "@/components/admin/ImageCropDialog";
 import { toast } from "sonner";
 import MathText from "@/components/MathText";
 import { QuestionImage } from "@/components/QuestionContent";
@@ -35,6 +36,7 @@ function fromQuestion(q) {
 export default function QuestionEditDialog({ question, open, onOpenChange, onSaved, syllabus }) {
   const [f, setF] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [cropImage, cropDialog] = useImageCrop();
   useEffect(() => { if (question && open) setF(fromQuestion(question)); }, [question, open]);
 
   const chapters = useMemo(() => {
@@ -87,6 +89,7 @@ export default function QuestionEditDialog({ question, open, onOpenChange, onSav
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-5xl max-h-[92vh] overflow-y-auto" data-testid="question-edit-dialog">
+        {cropDialog}
         <DialogHeader>
           <DialogTitle>Edit question</DialogTitle>
           <DialogDescription>Formulas in LaTeX between $ signs, e.g. $v = u + at$. The preview on the right updates as you type.</DialogDescription>
@@ -135,12 +138,29 @@ export default function QuestionEditDialog({ question, open, onOpenChange, onSav
               <Textarea data-testid="qe-text" rows={5} value={f.text} onChange={(e) => set({ text: e.target.value })} />
             </div>
 
-            {f.image_url && (
-              <div className="flex items-start gap-3 rounded-lg border p-2">
-                <div className="max-w-[220px]"><QuestionImage src={f.image_url} alt="Question picture" testId="qe-image" /></div>
-                <Button type="button" size="sm" variant="ghost" onClick={() => set({ image_url: null })}><ImageOff className="h-4 w-4 mr-1" /> Remove picture</Button>
+            <div className="flex flex-wrap items-start gap-3 rounded-lg border p-2" data-testid="qe-image-box">
+              {f.image_url && <div className="max-w-[220px]"><QuestionImage src={f.image_url} alt="Question picture" testId="qe-image" /></div>}
+              <div className="flex flex-wrap items-center gap-1">
+                <label className="inline-flex items-center gap-1.5 text-sm font-medium cursor-pointer px-3 py-1.5 rounded-md hover:bg-muted" data-testid="qe-image-upload">
+                  <ImageIcon className="h-4 w-4" /> {f.image_url ? "Replace picture" : "Add picture"}
+                  <input type="file" accept="image/*" className="hidden" data-testid="qe-image-input" onChange={async (e) => {
+                    const file = e.target.files?.[0]; e.target.value = "";
+                    if (!file) return;
+                    const out = await cropImage(file);
+                    if (!out) return;
+                    if (out.size > 4 * 1024 * 1024) return toast.error("Image too large (max 4MB) — crop it smaller");
+                    set({ image_url: await fileToDataUrl(out) });
+                  }} />
+                </label>
+                {f.image_url && (
+                  <Button type="button" size="sm" variant="ghost" data-testid="qe-image-crop" onClick={async () => {
+                    const out = await cropImage(f.image_url);
+                    if (out) set({ image_url: await fileToDataUrl(out) });
+                  }}><Crop className="h-4 w-4 mr-1" /> Crop</Button>
+                )}
+                {f.image_url && <Button type="button" size="sm" variant="ghost" onClick={() => set({ image_url: null })}><ImageOff className="h-4 w-4 mr-1" /> Remove picture</Button>}
               </div>
-            )}
+            </div>
 
             {hasOptions ? (
               <div className="space-y-2">
